@@ -16,6 +16,7 @@
  * @author  Frank Dellaert
  * @author  Alex Hagiopol
  * @author  Varun Agrawal
+ * @author  Fan Jiang
  */
 
 // \callgraph
@@ -41,25 +42,16 @@ typedef Eigen::VectorXd Vector;
 typedef Eigen::Matrix<double, 1, 1> Vector1;
 typedef Eigen::Vector2d Vector2;
 typedef Eigen::Vector3d Vector3;
-
-static const Eigen::MatrixBase<Vector2>::ConstantReturnType Z_2x1 = Vector2::Zero();
-static const Eigen::MatrixBase<Vector3>::ConstantReturnType Z_3x1 = Vector3::Zero();
-
-// Create handy typedefs and constants for vectors with N>3
-// VectorN and Z_Nx1, for N=1..9
-#define GTSAM_MAKE_VECTOR_DEFS(N)                \
-  using Vector##N = Eigen::Matrix<double, N, 1>; \
-  static const Eigen::MatrixBase<Vector##N>::ConstantReturnType Z_##N##x1 = Vector##N::Zero();
-
-GTSAM_MAKE_VECTOR_DEFS(4)
-GTSAM_MAKE_VECTOR_DEFS(5)
-GTSAM_MAKE_VECTOR_DEFS(6)
-GTSAM_MAKE_VECTOR_DEFS(7)
-GTSAM_MAKE_VECTOR_DEFS(8)
-GTSAM_MAKE_VECTOR_DEFS(9)
-GTSAM_MAKE_VECTOR_DEFS(10)
-GTSAM_MAKE_VECTOR_DEFS(11)
-GTSAM_MAKE_VECTOR_DEFS(12)
+using Vector4 = Eigen::Matrix<double, 4, 1>;
+using Vector5 = Eigen::Matrix<double, 5, 1>;
+using Vector6 = Eigen::Matrix<double, 6, 1>;
+using Vector7 = Eigen::Matrix<double, 7, 1>;
+using Vector8 = Eigen::Matrix<double, 8, 1>;
+using Vector9 = Eigen::Matrix<double, 9, 1>;
+using Vector10 = Eigen::Matrix<double, 10, 1>;
+using Vector11 = Eigen::Matrix<double, 11, 1>;
+using Vector12 = Eigen::Matrix<double, 12, 1>;
+using Vector15 = Eigen::Matrix<double, 15, 1>;
 
 typedef Eigen::VectorBlock<Vector> SubVector;
 typedef Eigen::VectorBlock<const Vector> ConstSubVector;
@@ -110,17 +102,22 @@ GTSAM_EXPORT void print(const Vector& v, const std::string& s = "");
  */
 GTSAM_EXPORT void save(const Vector& A, const std::string &s, const std::string& filename);
 
+#ifdef GTSAM_ALLOW_DEPRECATED_SINCE_V43
 /**
- * operator==()
+ * Exact vector equality.
+ * @deprecated Since GTSAM 4.3, use Eigen's `vec1 == vec2`.
  */
-GTSAM_EXPORT bool operator==(const Vector& vec1,const Vector& vec2);
+GTSAM_EXPORT bool operator==(const Vector& vec1, const Vector& vec2);
 
 /**
  * Greater than or equal to operation
  * returns true if all elements in v1
  * are greater than corresponding elements in v2
+ * @deprecated Since GTSAM 4.3, use
+ * `(v1.array() >= v2.array()).all()`.
  */
 GTSAM_EXPORT bool greaterThanOrEqual(const Vector& v1, const Vector& v2);
+#endif
 
 /**
  * VecA == VecB up to tolerance
@@ -192,36 +189,19 @@ GTSAM_EXPORT Vector ediv_(const Vector &a, const Vector &b);
  */
 template<class V1, class V2>
 inline double dot(const V1 &a, const V2& b) {
-  assert (b.size()==a.size());
   return a.dot(b);
 }
 
-/** compatibility version for ublas' inner_prod() */
+#ifdef GTSAM_ALLOW_DEPRECATED_SINCE_V43
+/**
+ * compatibility version for ublas' inner_prod()
+ * @deprecated Since GTSAM 4.3, use `a.dot(b)`.
+ */
 template<class V1, class V2>
 inline double inner_prod(const V1 &a, const V2& b) {
-  assert (b.size()==a.size());
   return a.dot(b);
 }
-
-/**
- * BLAS Level 1 scal: x <- alpha*x
- * \deprecated: use operators instead
- */
-inline void GTSAM_DEPRECATED scal(double alpha, Vector& x) { x *= alpha; }
-
-/**
- * BLAS Level 1 axpy: y <- alpha*x + y
- * \deprecated: use operators instead
- */
-template<class V1, class V2>
-inline void GTSAM_DEPRECATED axpy(double alpha, const V1& x, V2& y) {
-  assert (y.size()==x.size());
-  y += alpha * x;
-}
-inline void axpy(double alpha, const Vector& x, SubVector y) {
-  assert (y.size()==x.size());
-  y += alpha * x;
-}
+#endif
 
 /**
  * house(x,j) computes HouseHolder vector v and scaling factor beta
@@ -258,50 +238,11 @@ GTSAM_EXPORT double weightedPseudoinverse(const Vector& a, const Vector& weights
  */
 GTSAM_EXPORT Vector concatVectors(const std::list<Vector>& vs);
 
+#ifdef GTSAM_ALLOW_DEPRECATED_SINCE_V43
 /**
  * concatenate Vectors
+ * @deprecated Since GTSAM 4.3, use the `std::list<Vector>` overload.
  */
 GTSAM_EXPORT Vector concatVectors(size_t nrVectors, ...);
-} // namespace gtsam
-
-#include <boost/serialization/nvp.hpp>
-#include <boost/serialization/array.hpp>
-#include <boost/serialization/split_free.hpp>
-
-namespace boost {
-  namespace serialization {
-
-    // split version - copies into an STL vector for serialization
-    template<class Archive>
-    void save(Archive & ar, const gtsam::Vector & v, unsigned int /*version*/) {
-      const size_t size = v.size();
-      ar << BOOST_SERIALIZATION_NVP(size);
-      ar << make_nvp("data", make_array(v.data(), v.size()));
-    }
-
-    template<class Archive>
-    void load(Archive & ar, gtsam::Vector & v, unsigned int /*version*/) {
-      size_t size;
-      ar >> BOOST_SERIALIZATION_NVP(size);
-      v.resize(size);
-      ar >> make_nvp("data", make_array(v.data(), v.size()));
-    }
-
-    // split version - copies into an STL vector for serialization
-    template<class Archive, int D>
-    void save(Archive & ar, const Eigen::Matrix<double,D,1> & v, unsigned int /*version*/) {
-      ar << make_nvp("data", make_array(v.data(), v.RowsAtCompileTime));
-    }
-
-    template<class Archive, int D>
-    void load(Archive & ar, Eigen::Matrix<double,D,1> & v, unsigned int /*version*/) {
-      ar >> make_nvp("data", make_array(v.data(), v.RowsAtCompileTime));
-    }
-
-  } // namespace serialization
-} // namespace boost
-
-BOOST_SERIALIZATION_SPLIT_FREE(gtsam::Vector)
-BOOST_SERIALIZATION_SPLIT_FREE(gtsam::Vector2)
-BOOST_SERIALIZATION_SPLIT_FREE(gtsam::Vector3)
-BOOST_SERIALIZATION_SPLIT_FREE(gtsam::Vector6)
+#endif
+}  // namespace gtsam

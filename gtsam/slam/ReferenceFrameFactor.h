@@ -9,6 +9,10 @@
 
  * -------------------------------------------------------------------------- */
 
+/**
+ * @file ReferenceFrameFactor.h
+ */
+
 /*
  * @file ReferenceFrameFactor.h
  * @brief A constraint for combining graphs by common landmarks and a transform node
@@ -29,8 +33,8 @@ namespace gtsam {
 template<class T, class P>
 P transform_point(
     const T& trans, const P& global,
-    boost::optional<Matrix&> Dtrans,
-    boost::optional<Matrix&> Dglobal) {
+    OptionalMatrixType Dtrans,
+    OptionalMatrixType Dglobal) {
   return trans.transformFrom(global, Dtrans, Dglobal);
 }
 
@@ -54,14 +58,22 @@ P transform_point(
  * specific classes of landmarks
  */
 template<class POINT, class TRANSFORM>
-class ReferenceFrameFactor : public NoiseModelFactor3<POINT, TRANSFORM, POINT> {
+class ReferenceFrameFactor
+    : public NoiseModelFactorT<typename traits<POINT>::TangentVector, POINT,
+                               TRANSFORM, POINT> {
 protected:
   /** default constructor for serialization only */
   ReferenceFrameFactor() {}
 
 public:
-  typedef NoiseModelFactor3<POINT, TRANSFORM, POINT> Base;
+  typedef NoiseModelFactorT<typename traits<POINT>::TangentVector, POINT,
+                            TRANSFORM, POINT>
+      Base;
+  using ErrorVector = typename traits<POINT>::TangentVector;
   typedef ReferenceFrameFactor<POINT, TRANSFORM> This;
+
+  // Provide access to the Matrix& version of evaluateError:
+  using Base::evaluateError;
 
   typedef POINT Point;
   typedef TRANSFORM Transform;
@@ -77,7 +89,8 @@ public:
    * each degree of freedom.
    */
   ReferenceFrameFactor(double mu, Key globalKey, Key transKey, Key localKey)
-  : Base(globalKey, transKey, localKey, Point().dim(), mu) {}
+      : Base(noiseModel::Constrained::All(Point().dim(), mu), globalKey,
+             transKey, localKey) {}
 
   /**
    * Simple soft constraint constructor for frame of reference, with equal weighting for
@@ -90,17 +103,18 @@ public:
   ~ReferenceFrameFactor() override{}
 
   NonlinearFactor::shared_ptr clone() const override {
-    return boost::static_pointer_cast<NonlinearFactor>(
+    return std::static_pointer_cast<NonlinearFactor>(
         NonlinearFactor::shared_ptr(new This(*this))); }
 
   /** Combined cost and derivative function using boost::optional */
-  Vector evaluateError(const Point& global, const Transform& trans, const Point& local,
-        boost::optional<Matrix&> Dforeign = boost::none,
-        boost::optional<Matrix&> Dtrans = boost::none,
-        boost::optional<Matrix&> Dlocal = boost::none) const override {
-    Point newlocal = transform_point<Transform,Point>(trans, global, Dtrans, Dforeign);
-    if (Dlocal)
+  ErrorVector evaluateError(const Point& _global, const Transform& trans,
+                            const Point& local, OptionalMatrixType Dforeign,
+                            OptionalMatrixType Dtrans,
+                            OptionalMatrixType Dlocal) const override {
+    Point newlocal = transform_point<Transform,Point>(trans, _global, Dtrans, Dforeign);
+    if (Dlocal) {
       *Dlocal = -1* Matrix::Identity(traits<Point>::dimension, traits<Point>::dimension);
+    }
     return traits<Point>::Local(local,newlocal);
   }
 
@@ -119,6 +133,7 @@ public:
   Key local_key() const { return this->key3(); }
 
 private:
+#if GTSAM_ENABLE_BOOST_SERIALIZATION
   /** Serialization function */
   friend class boost::serialization::access;
   template<class ARCHIVE>
@@ -126,6 +141,7 @@ private:
     ar & boost::serialization::make_nvp("NonlinearFactor3",
         boost::serialization::base_object<Base>(*this));
   }
+#endif
 };
 
 /// traits

@@ -1,3 +1,18 @@
+/* ----------------------------------------------------------------------------
+
+ * GTSAM Copyright 2010, Georgia Tech Research Corporation,
+ * Atlanta, Georgia 30332-0415
+ * All Rights Reserved
+ * Authors: Frank Dellaert, et al. (see THANKS for the full author list)
+
+ * See LICENSE for the license information
+
+ * -------------------------------------------------------------------------- */
+
+/**
+ * @file LocalOrientedPlane3Factor.h
+ */
+
 /*
  * @file LocalOrientedPlane3Factor.h
  * @brief LocalOrientedPlane3 Factor class
@@ -9,6 +24,9 @@
 
 #include <gtsam/geometry/OrientedPlane3.h>
 #include <gtsam/nonlinear/NonlinearFactor.h>
+#include <gtsam/nonlinear/NoiseModelFactorN.h>
+#include <gtsam_unstable/dllexport.h>
+
 #include <string>
 
 namespace gtsam {
@@ -32,16 +50,20 @@ namespace gtsam {
  * a local linearisation point for the plane. The plane is representated and
  * optimized in x1 frame in the optimization.
  */
-class LocalOrientedPlane3Factor: public NoiseModelFactor3<Pose3, Pose3,
-                                                          OrientedPlane3> {
-protected:
+class GTSAM_UNSTABLE_EXPORT LocalOrientedPlane3Factor
+    : public NoiseModelFactorT<Vector3, Pose3, Pose3, OrientedPlane3> {
+ protected:
   OrientedPlane3 measured_p_;
-  typedef NoiseModelFactor3<Pose3, Pose3, OrientedPlane3> Base;
+  typedef NoiseModelFactorT<Vector3, Pose3, Pose3, OrientedPlane3> Base;
 public:
+
+  // Provide access to the Matrix& version of evaluateError:
+  using Base::evaluateError;
+
   /// Constructor
   LocalOrientedPlane3Factor() {}
 
-  virtual ~LocalOrientedPlane3Factor() {}
+  ~LocalOrientedPlane3Factor() override {}
 
   /** Constructor with measured plane (a,b,c,d) coefficients
    * @param z measured plane (a,b,c,d) coefficients as 4D vector
@@ -54,12 +76,12 @@ public:
    * Note: The anchorPoseKey can simply be chosen as the first pose a plane
    * is observed.  
    */
-  LocalOrientedPlane3Factor(const Vector4& z, const SharedGaussian& noiseModel,
+  LocalOrientedPlane3Factor(const Vector4& z, const SharedNoiseModel& noiseModel,
                             Key poseKey, Key anchorPoseKey, Key landmarkKey)
       : Base(noiseModel, poseKey, anchorPoseKey, landmarkKey), measured_p_(z) {}
 
   LocalOrientedPlane3Factor(const OrientedPlane3& z,
-                            const SharedGaussian& noiseModel,
+                            const SharedNoiseModel& noiseModel,
                             Key poseKey, Key anchorPoseKey, Key landmarkKey)
     : Base(noiseModel, poseKey, anchorPoseKey, landmarkKey), measured_p_(z) {}
 
@@ -81,12 +103,10 @@ public:
     * Note: The optimized plane is represented in anchor frame, a, not the
     * world frame.
     */
-  Vector evaluateError(const Pose3& wTwi, const Pose3& wTwa,
-      const OrientedPlane3& a_plane,
-      boost::optional<Matrix&> H1 = boost::none,
-      boost::optional<Matrix&> H2 = boost::none,
-      boost::optional<Matrix&> H3 = boost::none) const override;
+  Vector3 evaluateError(const Pose3& wTwi, const Pose3& wTwa,
+                        const OrientedPlane3& a_plane, OptionalMatrixType H1,
+                        OptionalMatrixType H2,
+                        OptionalMatrixType H3) const override;
 };
 
 }  // namespace gtsam
-

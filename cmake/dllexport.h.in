@@ -31,10 +31,10 @@
 
 // Whether GTSAM is compiled as static or DLL in windows. 
 // This will be used to decide whether include __declspec(dllimport) or not in headers
-#cmakedefine BUILD_SHARED_LIBS
+#cmakedefine GTSAM_SHARED_LIB
 
 #ifdef _WIN32
-#  ifndef BUILD_SHARED_LIBS
+#  ifndef GTSAM_SHARED_LIB
 #    define @library_name@_EXPORT
 #    define @library_name@_EXTERN_EXPORT extern
 #  else
@@ -56,5 +56,11 @@
 #endif
 #endif
 
-#undef BUILD_SHARED_LIBS
+// Keep implementation-detail symbols private to the library.
+#if !defined(_WIN32) && (defined(__GNUC__) || defined(__clang__))
+#  define @library_name@_LOCAL __attribute__((visibility("hidden")))
+#else
+#  define @library_name@_LOCAL
+#endif
 
+#undef GTSAM_SHARED_LIB

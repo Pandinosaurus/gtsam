@@ -16,7 +16,6 @@
  **/
 
 #include <gtsam/geometry/Quaternion.h>
-#include <gtsam/base/numericalDerivative.h>
 #include <gtsam/base/testLie.h>
 
 #include <CppUnitLite/TestHarness.h>
@@ -27,11 +26,14 @@ using namespace gtsam;
 typedef Quaternion Q; // Typedef
 typedef traits<Q>::ChartJacobian QuaternionJacobian;
 
+GTSAM_CONCEPT_TESTABLE_INST(Quaternion)
+GTSAM_CONCEPT_MATRIX_LIE_GROUP_INST(Quaternion)
+
 //******************************************************************************
 TEST(Quaternion , Concept) {
-  BOOST_CONCEPT_ASSERT((IsGroup<Quaternion >));
-  BOOST_CONCEPT_ASSERT((IsManifold<Quaternion >));
-  BOOST_CONCEPT_ASSERT((IsLieGroup<Quaternion >));
+  GTSAM_CONCEPT_ASSERT(IsGroup<Quaternion >);
+  GTSAM_CONCEPT_ASSERT(IsManifold<Quaternion >);
+  GTSAM_CONCEPT_ASSERT(IsMatrixLieGroup<Quaternion >);
 }
 
 //******************************************************************************
@@ -45,6 +47,26 @@ TEST(Quaternion , Logmap) {
   Vector3 v1 = traits<Q>::Logmap(q1);
   Vector3 v2 = traits<Q>::Logmap(q2);
   EXPECT(assert_equal(v1, v2));
+}
+
+//******************************************************************************
+// Rot3Q builds its quaternion directly from a user-supplied rotation matrix and
+// never renormalizes, so Logmap must not assume unit norm. It must also stay
+// accurate just above the old NearlyOne threshold, where acos(qw) is poorly
+// conditioned.
+TEST(Quaternion , LogmapUnnormalized) {
+  const Vector3 axis = Vector3(1, 2, 3).normalized();
+  for (double theta : {1e-4, 1e-2, 1.0, 3.0, 3.1415}) {
+    const Q unit(Eigen::AngleAxisd(theta, axis));
+    const Vector3 expected = theta * axis;
+    EXPECT(assert_equal((Vector)expected, (Vector)traits<Q>::Logmap(unit),
+                        1e-14));
+    for (double s : {0.5, 1.0 + 1e-7, 2.0}) {
+      const Q scaled(s * unit.w(), s * unit.x(), s * unit.y(), s * unit.z());
+      EXPECT(assert_equal((Vector)expected, (Vector)traits<Q>::Logmap(scaled),
+                          1e-14));
+    }
+  }
 }
 
 //******************************************************************************
@@ -81,12 +103,6 @@ TEST(Quaternion , Compose) {
 }
 
 //******************************************************************************
-Vector3 Q_z_axis(0, 0, 1);
-Q id(Eigen::AngleAxisd(0, Q_z_axis));
-Q R1(Eigen::AngleAxisd(1, Q_z_axis));
-Q R2(Eigen::AngleAxisd(2, Vector3(0, 1, 0)));
-
-//******************************************************************************
 TEST(Quaternion , Between) {
   Vector3 z_axis(0, 0, 1);
   Q q1(Eigen::AngleAxisd(0.2, z_axis));
@@ -108,7 +124,15 @@ TEST(Quaternion , Inverse) {
 }
 
 //******************************************************************************
-TEST(Quaternion , Invariants) {
+namespace {
+Vector3 Q_z_axis(0, 0, 1);
+Q id(Eigen::AngleAxisd(0, Q_z_axis));
+Q R1(Eigen::AngleAxisd(1, Q_z_axis));
+Q R2(Eigen::AngleAxisd(2, Vector3(0, 1, 0)));
+}  // namespace
+
+//******************************************************************************
+TEST(Quaternion, Invariants) {
   EXPECT(check_group_invariants(id, id));
   EXPECT(check_group_invariants(id, R1));
   EXPECT(check_group_invariants(R2, id));
@@ -121,7 +145,7 @@ TEST(Quaternion , Invariants) {
 }
 
 //******************************************************************************
-TEST(Quaternion , LieGroupDerivatives) {
+TEST(Quaternion, LieGroupDerivatives) {
   CHECK_LIE_GROUP_DERIVATIVES(id, id);
   CHECK_LIE_GROUP_DERIVATIVES(id, R2);
   CHECK_LIE_GROUP_DERIVATIVES(R2, id);
@@ -129,7 +153,7 @@ TEST(Quaternion , LieGroupDerivatives) {
 }
 
 //******************************************************************************
-TEST(Quaternion , ChartDerivatives) {
+TEST(Quaternion, ChartDerivatives) {
   CHECK_CHART_DERIVATIVES(id, id);
   CHECK_CHART_DERIVATIVES(id, R2);
   CHECK_CHART_DERIVATIVES(R2, id);

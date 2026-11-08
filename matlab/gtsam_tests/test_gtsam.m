@@ -4,6 +4,12 @@
 display 'Starting: testCal3Unified'
 testCal3Unified
 
+display 'Starting: testPose2'
+testPose2
+
+display 'Starting: testPose3'
+testPose3
+
 %% linear
 display 'Starting: testKalmanFilter'
 testKalmanFilter
@@ -14,6 +20,25 @@ testJacobianFactor
 %% nonlinear
 display 'Starting: testValues'
 testValues
+
+display 'Starting: testGradients'
+testGradients
+
+display 'Starting: testCustomFactor'
+testCustomFactor
+
+display 'Starting: testQcqpProblem'
+testQcqpProblem
+
+display 'Starting: testMosekSDP'
+testMosekSDP
+
+display 'Starting: testFixedLagSmootherRetention'
+testFixedLagSmootherRetention
+
+%% navigation
+display 'Starting: testRotatingImuCovariance'
+testRotatingImuCovariance
 
 %% SLAM
 display 'Starting: testPriorFactor'
@@ -44,11 +69,20 @@ testStereoVOExample
 display 'Starting: testVisualISAMExample'
 testVisualISAMExample
 
+display 'Starting: testProperties'
+testProperties
+
 %% MATLAB specific
 display 'Starting: testUtilities'
 testUtilities
 
-if(exist('testSerialization.m','file'))
+display 'Starting: testNumericalDerivative'
+testNumericalDerivative
+
+if(exist('testSerialization.m','file') && ...
+   ismethod('gtsam.Pose2', 'string_serialize') && ...
+   ismethod('gtsam.Values', 'string_serialize') && ...
+   ismethod('gtsam.NonlinearFactorGraph', 'string_serialize'))
     display 'Starting: testSerialization'
     testSerialization
 end

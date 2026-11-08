@@ -6,24 +6,13 @@
  */
 
 #include <gtsam/base/Testable.h>
+#include <gtsam/discrete/DiscreteBayesNet.h>
 #include <gtsam_unstable/discrete/CSP.h>
-#include <gtsam_unstable/discrete/Domain.h>
+#include <gtsam/discrete/Domain.h>
 
 using namespace std;
 
 namespace gtsam {
-
-/// Find the best total assignment - can be expensive
-CSP::Values CSP::optimalAssignment() const {
-  DiscreteBayesNet::shared_ptr chordal = this->eliminateSequential();
-  return chordal->optimize();
-}
-
-/// Find the best total assignment - can be expensive
-CSP::Values CSP::optimalAssignment(const Ordering& ordering) const {
-  DiscreteBayesNet::shared_ptr chordal = this->eliminateSequential(ordering);
-  return chordal->optimize();
-}
 
 bool CSP::runArcConsistency(const VariableIndex& index,
                             Domains* domains) const {
@@ -41,7 +30,7 @@ bool CSP::runArcConsistency(const VariableIndex& index,
     // Otherwise, loop over all factors/constraints for variable with given key.
     for (size_t f : factors) {
       // If this factor is a constraint, call its ensureArcConsistency method:
-      auto constraint = boost::dynamic_pointer_cast<Constraint>((*this)[f]);
+      auto constraint = std::dynamic_pointer_cast<Constraint>((*this)[f]);
       if (constraint) {
         changed = constraint->ensureArcConsistency(key, domains) || changed;
       }
@@ -86,7 +75,7 @@ CSP CSP::partiallyApply(const Domains& domains) const {
 
   // Reduce all existing factors:
   for (const DiscreteFactor::shared_ptr& f : factors_) {
-    auto constraint = boost::dynamic_pointer_cast<Constraint>(f);
+    auto constraint = std::dynamic_pointer_cast<Constraint>(f);
     if (!constraint)
       throw runtime_error("CSP:runArcConsistency: non-constraint factor");
     Constraint::shared_ptr reduced = constraint->partiallyApply(domains);

@@ -21,6 +21,8 @@
 
 #include <gtsam/linear/GaussianBayesNet.h>
 #include <gtsam/linear/GaussianFactorGraph.h>
+#include <gtsam/linear/JointMarginal.h>
+#include <gtsam/linear/GaussianBayesTreeQueries.h>
 #include <gtsam/inference/BayesTree.h>
 #include <gtsam/inference/BayesTreeCliqueBase.h>
 
@@ -38,11 +40,10 @@ namespace gtsam {
   public:
     typedef GaussianBayesTreeClique This;
     typedef BayesTreeCliqueBase<GaussianBayesTreeClique, GaussianFactorGraph> Base;
-    typedef boost::shared_ptr<This> shared_ptr;
-    typedef boost::weak_ptr<This> weak_ptr;
+    typedef std::shared_ptr<This> shared_ptr;
+    typedef std::weak_ptr<This> weak_ptr;
     GaussianBayesTreeClique() {}
-    virtual ~GaussianBayesTreeClique() {}
-    GaussianBayesTreeClique(const boost::shared_ptr<GaussianConditional>& conditional) : Base(conditional) {}
+    GaussianBayesTreeClique(const std::shared_ptr<GaussianConditional>& conditional) : Base(conditional) {}
   };
 
   /* ************************************************************************* */
@@ -55,7 +56,7 @@ namespace gtsam {
 
   public:
     typedef GaussianBayesTree This;
-    typedef boost::shared_ptr<This> shared_ptr;
+    typedef std::shared_ptr<This> shared_ptr;
 
     /** Default constructor, creates an empty Bayes tree */
     GaussianBayesTree() {}
@@ -65,6 +66,29 @@ namespace gtsam {
 
     /** Recursively optimize the BayesTree to produce a vector solution. */
     VectorValues optimize() const;
+
+    /**
+     * Solve U x = rhs in a root-to-leaf traversal, where U is the upper
+     * triangular operator formed by the whitened conditional R and S blocks.
+     * The stored conditional right-hand sides are ignored. Missing variable
+     * blocks in rhs are zero; unknown keys, wrong dimensions, or nonfinite
+     * values throw std::invalid_argument.
+     *
+     * Requires nonsingular conditionals with finite, strictly positive diagonal
+     * noise (or no noise model). Constrained noise is unsupported and throws
+     * std::invalid_argument. Singular or nonfinite solutions throw
+     * IndeterminateSystemException. The tree and rhs remain unchanged.
+     */
+    VectorValues backSubstitute(const VectorValues& rhs) const;
+
+    /**
+     * Solve U^T y = rhs in a leaf-to-root traversal for the whitened triangular
+     * operator U defined by backSubstitute(). Child separator contributions are
+     * accumulated privately before each parent is solved, allowing independent
+     * subtrees to run in parallel. Sparse inputs, supported noise models, and
+     * exceptions follow backSubstitute(). The tree and rhs remain unchanged.
+     */
+    VectorValues backSubstituteTranspose(const VectorValues& rhs) const;
 
     /**
      * Optimize along the gradient direction, with a closed-form computation to perform the line
@@ -124,9 +148,42 @@ namespace gtsam {
      * because this is more numerically stable. */
     double logDeterminant() const;
 
-    /** Return the marginal on the requested variable as a covariance matrix.  See also
-    *   marginalFactor(). */
+    /// Return the marginal information matrix on the requested variable.
+    Matrix marginalInformation(Key key) const;
+
+    /// Return the marginal covariance matrix on the requested variable.
     Matrix marginalCovariance(Key key) const;
+
+    /// Return the marginal information matrix using a specific elimination rule.
+    Matrix marginalInformation(Key key, const Eliminate& eliminate) const {
+      return internal::marginalInformation(*this, key, eliminate);
+    }
+
+    /// Return the marginal covariance matrix using a specific elimination rule.
+    Matrix marginalCovariance(Key key, const Eliminate& eliminate) const {
+      return internal::jointMarginalCovariance(*this, KeyVector{key}, eliminate)
+          .fullMatrix();
+    }
+
+    /// Return the joint marginal information matrix in `queryKeys` order.
+    JointMarginal jointMarginalInformation(const KeyVector& queryKeys) const;
+
+    /// Return the joint marginal covariance matrix in `queryKeys` order.
+    JointMarginal jointMarginalCovariance(const KeyVector& queryKeys) const;
+
+    /// Return joint marginal information in `queryKeys` order using an
+    /// elimination rule.
+    JointMarginal jointMarginalInformation(const KeyVector& queryKeys,
+                                          const Eliminate& eliminate) const {
+      return internal::jointMarginalInformation(*this, queryKeys, eliminate);
+    }
+
+    /// Return joint marginal covariance in `queryKeys` order using an
+    /// elimination rule.
+    JointMarginal jointMarginalCovariance(const KeyVector& queryKeys,
+                                          const Eliminate& eliminate) const {
+      return internal::jointMarginalCovariance(*this, queryKeys, eliminate);
+    }
   };
 
   /// traits
@@ -135,3 +192,7 @@ namespace gtsam {
   };
 
 } //\ namespace gtsam
+
+#if GTSAM_ENABLE_BOOST_SERIALIZATION
+BOOST_CLASS_VERSION(gtsam::GaussianBayesTree, 1)
+#endif

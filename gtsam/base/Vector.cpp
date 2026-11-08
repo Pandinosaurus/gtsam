@@ -18,13 +18,12 @@
  */
 
 #include <gtsam/base/Vector.h>
-#include <boost/optional.hpp>
 #include <stdexcept>
 #include <cstdarg>
 #include <limits>
 #include <iostream>
 #include <fstream>
-#include <sstream>
+#include <cassert>
 #include <iomanip>
 #include <cmath>
 #include <cstdio>
@@ -100,6 +99,7 @@ void save(const Vector& v, const string &s, const string& filename) {
   stream.close();
 }
 
+#ifdef GTSAM_ALLOW_DEPRECATED_SINCE_V43
 /* ************************************************************************* */
 bool operator==(const Vector& vec1,const Vector& vec2) {
   if (vec1.size() != vec2.size()) return false;
@@ -118,6 +118,7 @@ bool greaterThanOrEqual(const Vector& vec1, const Vector& vec2) {
       return false;
   return true;
 }
+#endif
 
 /* ************************************************************************* */
 bool equal_with_abs_tol(const Vector& vec1, const Vector& vec2, double tol) {
@@ -299,23 +300,21 @@ weightedPseudoinverse(const Vector& a, const Vector& weights) {
 }
 
 /* ************************************************************************* */
-Vector concatVectors(const std::list<Vector>& vs)
-{
+Vector concatVectors(const std::list<Vector>& vs) {
   size_t dim = 0;
-  for(Vector v: vs)
-  dim += v.size();
+  for (const Vector& v : vs) dim += v.size();
 
   Vector A(dim);
   size_t index = 0;
-  for(Vector v: vs) {
-    for(int d = 0; d < v.size(); d++)
-      A(d+index) = v(d);
+  for (const Vector& v : vs) {
+    for (int d = 0; d < v.size(); d++) A(d + index) = v(d);
     index += v.size();
   }
 
   return A;
 }
 
+#ifdef GTSAM_ALLOW_DEPRECATED_SINCE_V43
 /* ************************************************************************* */
 Vector concatVectors(size_t nrVectors, ...)
 {
@@ -329,5 +328,6 @@ Vector concatVectors(size_t nrVectors, ...)
   va_end(ap);
   return concatVectors(vs);
 }
+#endif
 
 } // namespace gtsam

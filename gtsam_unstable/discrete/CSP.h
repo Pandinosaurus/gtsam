@@ -8,8 +8,9 @@
 #pragma once
 
 #include <gtsam/discrete/DiscreteFactorGraph.h>
-#include <gtsam_unstable/discrete/AllDiff.h>
-#include <gtsam_unstable/discrete/SingleValue.h>
+#include <gtsam/discrete/AllDiff.h>
+#include <gtsam/discrete/SingleValue.h>
+#include <gtsam_unstable/dllexport.h>
 
 namespace gtsam {
 
@@ -20,10 +21,8 @@ namespace gtsam {
  */
 class GTSAM_UNSTABLE_EXPORT CSP : public DiscreteFactorGraph {
  public:
-  /** A map from keys to values */
-  typedef Assignment<Key> Values;
+  using Values = DiscreteValues; ///< backwards compatibility
 
- public:
   /// Add a unary constraint, allowing only a single value
   void addSingleValue(const DiscreteKey& dkey, size_t value) {
     emplace_shared<SingleValue>(dkey, value);
@@ -44,12 +43,6 @@ class GTSAM_UNSTABLE_EXPORT CSP : public DiscreteFactorGraph {
   //        if (factor) result = (*factor) * result;
   //      return result;
   //    }
-
-  /// Find the best total assignment - can be expensive.
-  Values optimalAssignment() const;
-
-  /// Find the best total assignment, with given ordering - can be expensive.
-  Values optimalAssignment(const Ordering& ordering) const;
 
   //    /*
   //     * Perform loopy belief propagation

@@ -9,11 +9,19 @@
 
 #pragma once
 
+#include <gtsam/config.h>
+
+#ifdef GTSAM_ALLOW_DEPRECATED_SINCE_V43
+
 #include <gtsam_unstable/dllexport.h>
 #include <gtsam/nonlinear/NonlinearFactor.h>
 
 namespace gtsam {
 
+/**
+ * Dummy factor used to make a graph appear connected.
+ * @deprecated This experimental utility has no maintained replacement.
+ */
 class GTSAM_UNSTABLE_EXPORT DummyFactor : public NonlinearFactor {
 protected:
 
@@ -54,7 +62,7 @@ public:
   size_t dim() const override { return rowDim_; }
 
   /** linearize to a GaussianFactor */
-  boost::shared_ptr<GaussianFactor> linearize(const Values& c) const override;
+  std::shared_ptr<GaussianFactor> linearize(const Values& c) const override;
 
   /**
    * Creates a shared_ptr clone of the factor - needs to be specialized to allow
@@ -63,7 +71,7 @@ public:
    * By default, throws exception if subclass does not implement the function.
    */
   NonlinearFactor::shared_ptr clone() const override {
-    return boost::static_pointer_cast<NonlinearFactor>(
+    return std::static_pointer_cast<NonlinearFactor>(
         NonlinearFactor::shared_ptr(new DummyFactor(*this)));
   }
 
@@ -71,6 +79,7 @@ public:
 
 } // \namespace gtsam
 
+#endif  // GTSAM_ALLOW_DEPRECATED_SINCE_V43
 
 
 

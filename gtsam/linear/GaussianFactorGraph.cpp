@@ -18,16 +18,17 @@
  * @author  Frank Dellaert
  */
 
-#include <gtsam/linear/GaussianFactorGraph.h>
-#include <gtsam/linear/GaussianBayesTree.h>
-#include <gtsam/linear/GaussianEliminationTree.h>
-#include <gtsam/linear/GaussianJunctionTree.h>
-#include <gtsam/linear/HessianFactor.h>
-#include <gtsam/inference/FactorGraph-inst.h>
-#include <gtsam/inference/EliminateableFactorGraph-inst.h>
 #include <gtsam/base/debug.h>
 #include <gtsam/base/timing.h>
-#include <gtsam/base/cholesky.h>
+#include <gtsam/inference/EliminateableFactorGraph-inst.h>
+#include <gtsam/inference/FactorGraph-inst.h>
+#include <gtsam/linear/GaussianBayesTree.h>
+#include <gtsam/linear/GaussianEliminationTree.h>
+#include <gtsam/linear/GaussianFactorGraph.h>
+#include <gtsam/linear/GaussianJunctionTree.h>
+#include <gtsam/linear/HessianFactor.h>
+
+#include <Eigen/Cholesky>
 
 using namespace std;
 using namespace gtsam;
@@ -57,6 +58,7 @@ namespace gtsam {
   std::map<Key, size_t> GaussianFactorGraph::getKeyDimMap() const {
     map<Key, size_t> spec;
     for (const GaussianFactor::shared_ptr& gf : *this) {
+      if (!gf) continue;
       for (GaussianFactor::const_iterator it = gf->begin(); it != gf->end(); it++) {
         map<Key,size_t>::iterator it2 = spec.find(*it);
         if ( it2 == spec.end() ) {
@@ -65,6 +67,51 @@ namespace gtsam {
       }
     }
     return spec;
+  }
+
+  /* ************************************************************************* */
+  double GaussianFactorGraph::error(const VectorValues& x) const {
+    double total_error = 0.;
+    for(const sharedFactor& factor: *this){
+      if(factor)
+        total_error += factor->error(x);
+    }
+    return total_error;
+  }
+
+  /* ************************************************************************* */
+  double GaussianFactorGraph::deltaError(const VectorValues& x, double* oldError,
+                                         double* newError) const {
+    double oldTotal = 0.0;
+    double newTotal = 0.0;
+    double deltaTotal = 0.0;
+    for (const sharedFactor& factor : *this) {
+      if (!factor) {
+        continue;
+      }
+      if (oldError || newError) {
+        double factorOld = 0.0;
+        double factorNew = 0.0;
+        deltaTotal += factor->deltaError(x, &factorOld, &factorNew);
+        oldTotal += factorOld;
+        newTotal += factorNew;
+      } else {
+        deltaTotal += factor->deltaError(x, nullptr, nullptr);
+      }
+    }
+    if (oldError) {
+      *oldError = oldTotal;
+    }
+    if (newError) {
+      *newError = newTotal;
+    }
+    return deltaTotal;
+  }
+
+  /* ************************************************************************* */
+  double GaussianFactorGraph::probPrime(const VectorValues& c) const {
+    // NOTE the 0.5 constant is handled by the factor error.
+    return exp(-error(c));
   }
 
   /* ************************************************************************* */
@@ -132,10 +179,10 @@ namespace gtsam {
 
       // Convert to JacobianFactor if necessary
       JacobianFactor::shared_ptr jacobianFactor(
-          boost::dynamic_pointer_cast<JacobianFactor>(factor));
+          std::dynamic_pointer_cast<JacobianFactor>(factor));
       if (!jacobianFactor) {
         HessianFactor::shared_ptr hessian(
-            boost::dynamic_pointer_cast<HessianFactor>(factor));
+            std::dynamic_pointer_cast<HessianFactor>(factor));
         if (hessian)
           jacobianFactor.reset(new JacobianFactor(*hessian));
         else
@@ -233,7 +280,7 @@ namespace gtsam {
     // combine all factors and get upper-triangular part of Hessian
     Scatter scatter(*this, ordering);
     HessianFactor combined(*this, scatter);
-    return combined.info().selfadjointView();;
+    return combined.info().selfadjointView();
   }
 
   /* ************************************************************************* */
@@ -241,7 +288,7 @@ namespace gtsam {
     // combine all factors and get upper-triangular part of Hessian
     Scatter scatter(*this);
     HessianFactor combined(*this, scatter);
-    return combined.info().selfadjointView();;
+    return combined.info().selfadjointView();
   }
 
   /* ************************************************************************* */
@@ -311,28 +358,16 @@ namespace gtsam {
     Scatter scatter(*this);
     HessianFactor combined(*this, scatter);
 
-    // TODO(frank): cast to large dynamic matrix :-(
-    // NOTE(frank): info only valid (I think) in upper triangle. No problem for LLT...
-    Matrix augmented = combined.info().selfadjointView();
-
-    // Do Cholesky Factorization
-    size_t n = augmented.rows() - 1;
-    auto AtA = augmented.topLeftCorner(n, n);
-    auto eta = augmented.topRightCorner(n, 1);
-    Eigen::LLT<Matrix, Eigen::Upper> llt(AtA);
-
-    // Solve and convert, re-using scatter data structure
-    Vector solution = llt.solve(eta);
-    return VectorValues(solution, scatter);
+    return combined.solve();
   }
 
   /* ************************************************************************* */
   namespace {
     JacobianFactor::shared_ptr convertToJacobianFactorPtr(const GaussianFactor::shared_ptr &gf) {
-      JacobianFactor::shared_ptr result = boost::dynamic_pointer_cast<JacobianFactor>(gf);
+      JacobianFactor::shared_ptr result = std::dynamic_pointer_cast<JacobianFactor>(gf);
       if( !result )
         // Convert any non-Jacobian factors to Jacobians (e.g. Hessian -> Jacobian with Cholesky)
-        result = boost::make_shared<JacobianFactor>(*gf);
+        result = std::make_shared<JacobianFactor>(*gf);
       return result;
     }
   }
@@ -379,7 +414,7 @@ namespace gtsam {
 
     gttic(Compute_minimizing_step_size);
     // Compute minimizing step size
-    double step = -gradientSqNorm / dot(Rg, Rg);
+    double step = -gradientSqNorm / gtsam::dot(Rg, Rg);
     gttoc(Compute_minimizing_step_size);
 
     gttic(Compute_point);
@@ -426,7 +461,7 @@ namespace gtsam {
   bool hasConstraints(const GaussianFactorGraph& factors) {
     typedef JacobianFactor J;
     for (const GaussianFactor::shared_ptr& factor: factors) {
-      J::shared_ptr jacobian(boost::dynamic_pointer_cast<J>(factor));
+      J::shared_ptr jacobian(std::dynamic_pointer_cast<J>(factor));
       if (jacobian && jacobian->get_model() && jacobian->get_model()->isConstrained()) {
         return true;
       }

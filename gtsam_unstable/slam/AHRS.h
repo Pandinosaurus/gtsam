@@ -5,8 +5,11 @@
  *      Author: cbeall3
  */
 
-#ifndef AHRS_H_
-#define AHRS_H_
+#pragma once
+
+#include <gtsam/config.h>
+
+#ifdef GTSAM_ALLOW_DEPRECATED_SINCE_V43
 
 #include "Mechanization_bRn2.h"
 #include <gtsam_unstable/dllexport.h>
@@ -14,6 +17,11 @@
 
 namespace gtsam {
 
+/**
+ * Experimental attitude and heading reference system.
+ * @deprecated Use supported GTSAM navigation preintegration and attitude
+ * estimation facilities.
+ */
 class GTSAM_UNSTABLE_EXPORT AHRS {
 
 private:
@@ -77,9 +85,8 @@ public:
   void print(const std::string& s = "") const;
 
   virtual ~AHRS();
-
-  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
 
 } /* namespace gtsam */
-#endif /* AHRS_H_ */
+
+#endif  // GTSAM_ALLOW_DEPRECATED_SINCE_V43

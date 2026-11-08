@@ -1,10 +1,6 @@
 #include <gtwrap/matlab.h>
 #include <map>
 
-#include <boost/archive/text_iarchive.hpp>
-#include <boost/archive/text_oarchive.hpp>
-#include <boost/serialization/export.hpp>
-
 
 
 
@@ -51,7 +47,7 @@ void _functions_RTTIRegister() {
     mxDestroyArray(registry);
 
     mxArray *newAlreadyCreated = mxCreateNumericMatrix(0, 0, mxINT8_CLASS, mxREAL);
-    if(mexPutVariable("global", "gtsam_geometry_rttiRegistry_created", newAlreadyCreated) != 0) {
+    if(mexPutVariable("global", "gtsam_functions_rttiRegistry_created", newAlreadyCreated) != 0) {
       mexErrMsgTxt("gtsam wrap:  Error indexing RTTI types, inheritance will not work correctly");
     }
     mxDestroyArray(newAlreadyCreated);
@@ -62,7 +58,7 @@ void load2D_0(int nargout, mxArray *out[], int nargin, const mxArray *in[])
 {
   checkArguments("load2D",nargout,nargin,5);
   string filename = unwrap< string >(in[0]);
-  boost::shared_ptr<Test> model = unwrap_shared_ptr< Test >(in[1], "ptr_Test");
+  std::shared_ptr<Test> model = unwrap_shared_ptr< Test >(in[1], "ptr_Test");
   int maxID = unwrap< int >(in[2]);
   bool addNoise = unwrap< bool >(in[3]);
   bool smart = unwrap< bool >(in[4]);
@@ -74,7 +70,7 @@ void load2D_1(int nargout, mxArray *out[], int nargin, const mxArray *in[])
 {
   checkArguments("load2D",nargout,nargin,5);
   string filename = unwrap< string >(in[0]);
-  boost::shared_ptr<gtsam::noiseModel::Diagonal> model = unwrap_shared_ptr< gtsam::noiseModel::Diagonal >(in[1], "ptr_gtsamnoiseModelDiagonal");
+  std::shared_ptr<gtsam::noiseModel::Diagonal> model = unwrap_shared_ptr< gtsam::noiseModel::Diagonal >(in[1], "ptr_gtsamnoiseModelDiagonal");
   int maxID = unwrap< int >(in[2]);
   bool addNoise = unwrap< bool >(in[3]);
   bool smart = unwrap< bool >(in[4]);
@@ -86,7 +82,7 @@ void load2D_2(int nargout, mxArray *out[], int nargin, const mxArray *in[])
 {
   checkArguments("load2D",nargout,nargin,2);
   string filename = unwrap< string >(in[0]);
-  boost::shared_ptr<gtsam::noiseModel::Diagonal> model = unwrap_shared_ptr< gtsam::noiseModel::Diagonal >(in[1], "ptr_gtsamnoiseModelDiagonal");
+  gtsam::noiseModel::Diagonal* model = unwrap_ptr< gtsam::noiseModel::Diagonal >(in[1], "ptr_gtsamnoiseModelDiagonal");
   auto pairResult = load2D(filename,model);
   out[0] = wrap_shared_ptr(pairResult.first,"gtsam.NonlinearFactorGraph", false);
   out[1] = wrap_shared_ptr(pairResult.second,"gtsam.Values", false);
@@ -112,16 +108,16 @@ void overloadedGlobalFunction_5(int nargout, mxArray *out[], int nargin, const m
 void MultiTemplatedFunctionStringSize_tDouble_6(int nargout, mxArray *out[], int nargin, const mxArray *in[])
 {
   checkArguments("MultiTemplatedFunctionStringSize_tDouble",nargout,nargin,2);
-  T& x = *unwrap_shared_ptr< T >(in[0], "ptr_T");
+  string& x = *unwrap_shared_ptr< string >(in[0], "ptr_string");
   size_t y = unwrap< size_t >(in[1]);
-  out[0] = wrap< double >(MultiTemplatedFunctionStringSize_tDouble(x,y));
+  out[0] = wrap< double >(MultiTemplatedFunction<string,size_t,double>(x,y));
 }
 void MultiTemplatedFunctionDoubleSize_tDouble_7(int nargout, mxArray *out[], int nargin, const mxArray *in[])
 {
   checkArguments("MultiTemplatedFunctionDoubleSize_tDouble",nargout,nargin,2);
-  T& x = *unwrap_shared_ptr< T >(in[0], "ptr_T");
+  double x = unwrap< double >(in[0]);
   size_t y = unwrap< size_t >(in[1]);
-  out[0] = wrap< double >(MultiTemplatedFunctionDoubleSize_tDouble(x,y));
+  out[0] = wrap< double >(MultiTemplatedFunction<double,size_t,double>(x,y));
 }
 void DefaultFuncInt_8(int nargout, mxArray *out[], int nargin, const mxArray *in[])
 {
@@ -130,47 +126,168 @@ void DefaultFuncInt_8(int nargout, mxArray *out[], int nargin, const mxArray *in
   int b = unwrap< int >(in[1]);
   DefaultFuncInt(a,b);
 }
-void DefaultFuncString_9(int nargout, mxArray *out[], int nargin, const mxArray *in[])
+void DefaultFuncInt_9(int nargout, mxArray *out[], int nargin, const mxArray *in[])
+{
+  checkArguments("DefaultFuncInt",nargout,nargin,1);
+  int a = unwrap< int >(in[0]);
+  DefaultFuncInt(a,0);
+}
+void DefaultFuncInt_10(int nargout, mxArray *out[], int nargin, const mxArray *in[])
+{
+  checkArguments("DefaultFuncInt",nargout,nargin,0);
+  DefaultFuncInt(123,0);
+}
+void DefaultFuncString_11(int nargout, mxArray *out[], int nargin, const mxArray *in[])
 {
   checkArguments("DefaultFuncString",nargout,nargin,2);
   string& s = *unwrap_shared_ptr< string >(in[0], "ptr_string");
   string& name = *unwrap_shared_ptr< string >(in[1], "ptr_string");
   DefaultFuncString(s,name);
 }
-void DefaultFuncObj_10(int nargout, mxArray *out[], int nargin, const mxArray *in[])
+void DefaultFuncString_12(int nargout, mxArray *out[], int nargin, const mxArray *in[])
+{
+  checkArguments("DefaultFuncString",nargout,nargin,1);
+  string& s = *unwrap_shared_ptr< string >(in[0], "ptr_string");
+  DefaultFuncString(s,"");
+}
+void DefaultFuncString_13(int nargout, mxArray *out[], int nargin, const mxArray *in[])
+{
+  checkArguments("DefaultFuncString",nargout,nargin,0);
+  DefaultFuncString("hello","");
+}
+void DefaultFuncObj_14(int nargout, mxArray *out[], int nargin, const mxArray *in[])
 {
   checkArguments("DefaultFuncObj",nargout,nargin,1);
   gtsam::KeyFormatter& keyFormatter = *unwrap_shared_ptr< gtsam::KeyFormatter >(in[0], "ptr_gtsamKeyFormatter");
   DefaultFuncObj(keyFormatter);
 }
-void DefaultFuncZero_11(int nargout, mxArray *out[], int nargin, const mxArray *in[])
+void DefaultFuncObj_15(int nargout, mxArray *out[], int nargin, const mxArray *in[])
+{
+  checkArguments("DefaultFuncObj",nargout,nargin,0);
+  DefaultFuncObj(gtsam::DefaultKeyFormatter);
+}
+void DefaultFuncZero_16(int nargout, mxArray *out[], int nargin, const mxArray *in[])
 {
   checkArguments("DefaultFuncZero",nargout,nargin,5);
   int a = unwrap< int >(in[0]);
   int b = unwrap< int >(in[1]);
   double c = unwrap< double >(in[2]);
-  bool d = unwrap< bool >(in[3]);
+  int d = unwrap< int >(in[3]);
   bool e = unwrap< bool >(in[4]);
   DefaultFuncZero(a,b,c,d,e);
 }
-void DefaultFuncVector_12(int nargout, mxArray *out[], int nargin, const mxArray *in[])
+void DefaultFuncZero_17(int nargout, mxArray *out[], int nargin, const mxArray *in[])
+{
+  checkArguments("DefaultFuncZero",nargout,nargin,4);
+  int a = unwrap< int >(in[0]);
+  int b = unwrap< int >(in[1]);
+  double c = unwrap< double >(in[2]);
+  int d = unwrap< int >(in[3]);
+  DefaultFuncZero(a,b,c,d,false);
+}
+void DefaultFuncZero_18(int nargout, mxArray *out[], int nargin, const mxArray *in[])
+{
+  checkArguments("DefaultFuncZero",nargout,nargin,3);
+  int a = unwrap< int >(in[0]);
+  int b = unwrap< int >(in[1]);
+  double c = unwrap< double >(in[2]);
+  DefaultFuncZero(a,b,c,0,false);
+}
+void DefaultFuncZero_19(int nargout, mxArray *out[], int nargin, const mxArray *in[])
+{
+  checkArguments("DefaultFuncZero",nargout,nargin,2);
+  int a = unwrap< int >(in[0]);
+  int b = unwrap< int >(in[1]);
+  DefaultFuncZero(a,b,0.0,0,false);
+}
+void DefaultFuncVector_20(int nargout, mxArray *out[], int nargin, const mxArray *in[])
 {
   checkArguments("DefaultFuncVector",nargout,nargin,2);
   std::vector<int>& i = *unwrap_shared_ptr< std::vector<int> >(in[0], "ptr_stdvectorint");
   std::vector<string>& s = *unwrap_shared_ptr< std::vector<string> >(in[1], "ptr_stdvectorstring");
   DefaultFuncVector(i,s);
 }
-void setPose_13(int nargout, mxArray *out[], int nargin, const mxArray *in[])
+void DefaultFuncVector_21(int nargout, mxArray *out[], int nargin, const mxArray *in[])
+{
+  checkArguments("DefaultFuncVector",nargout,nargin,1);
+  std::vector<int>& i = *unwrap_shared_ptr< std::vector<int> >(in[0], "ptr_stdvectorint");
+  DefaultFuncVector(i,{"borglab", "gtsam"});
+}
+void DefaultFuncVector_22(int nargout, mxArray *out[], int nargin, const mxArray *in[])
+{
+  checkArguments("DefaultFuncVector",nargout,nargin,0);
+  DefaultFuncVector({1, 2, 3},{"borglab", "gtsam"});
+}
+void setPose_23(int nargout, mxArray *out[], int nargin, const mxArray *in[])
 {
   checkArguments("setPose",nargout,nargin,1);
   gtsam::Pose3& pose = *unwrap_shared_ptr< gtsam::Pose3 >(in[0], "ptr_gtsamPose3");
   setPose(pose);
 }
-void TemplatedFunctionRot3_14(int nargout, mxArray *out[], int nargin, const mxArray *in[])
+void setPose_24(int nargout, mxArray *out[], int nargin, const mxArray *in[])
+{
+  checkArguments("setPose",nargout,nargin,0);
+  setPose(gtsam::Pose3());
+}
+void EliminateDiscrete_25(int nargout, mxArray *out[], int nargin, const mxArray *in[])
+{
+  checkArguments("EliminateDiscrete",nargout,nargin,2);
+  gtsam::DiscreteFactorGraph& factors = *unwrap_shared_ptr< gtsam::DiscreteFactorGraph >(in[0], "ptr_gtsamDiscreteFactorGraph");
+  gtsam::Ordering& frontalKeys = *unwrap_shared_ptr< gtsam::Ordering >(in[1], "ptr_gtsamOrdering");
+  auto pairResult = EliminateDiscrete(factors,frontalKeys);
+  out[0] = wrap_shared_ptr(pairResult.first,"gtsam.DiscreteConditional", false);
+  out[1] = wrap_shared_ptr(pairResult.second,"gtsam.DecisionTreeFactor", false);
+}
+void triangulatePoint3Cal3_S2_26(int nargout, mxArray *out[], int nargin, const mxArray *in[])
+{
+  checkArguments("triangulatePoint3Cal3_S2",nargout,nargin,6);
+  gtsam::Pose3Vector& poses = *unwrap_shared_ptr< gtsam::Pose3Vector >(in[0], "ptr_gtsamPose3Vector");
+  std::shared_ptr<gtsam::Cal3_S2> sharedCal = unwrap_shared_ptr< gtsam::Cal3_S2 >(in[1], "ptr_gtsamCal3_S2");
+  gtsam::Point2Vector& measurements = *unwrap_shared_ptr< gtsam::Point2Vector >(in[2], "ptr_gtsamPoint2Vector");
+  double rank_tol = unwrap< double >(in[3]);
+  bool optimize = unwrap< bool >(in[4]);
+  gtsam::SharedNoiseModel& model = *unwrap_shared_ptr< gtsam::SharedNoiseModel >(in[5], "ptr_gtsamSharedNoiseModel");
+  out[0] = wrap< Point3 >(triangulatePoint3<gtsam::Cal3_S2>(poses,sharedCal,measurements,rank_tol,optimize,model));
+}
+void triangulatePoint3Cal3_S2_27(int nargout, mxArray *out[], int nargin, const mxArray *in[])
+{
+  checkArguments("triangulatePoint3Cal3_S2",nargout,nargin,5);
+  gtsam::Pose3Vector& poses = *unwrap_shared_ptr< gtsam::Pose3Vector >(in[0], "ptr_gtsamPose3Vector");
+  std::shared_ptr<gtsam::Cal3_S2> sharedCal = unwrap_shared_ptr< gtsam::Cal3_S2 >(in[1], "ptr_gtsamCal3_S2");
+  gtsam::Point2Vector& measurements = *unwrap_shared_ptr< gtsam::Point2Vector >(in[2], "ptr_gtsamPoint2Vector");
+  double rank_tol = unwrap< double >(in[3]);
+  bool optimize = unwrap< bool >(in[4]);
+  out[0] = wrap< Point3 >(triangulatePoint3<gtsam::Cal3_S2>(poses,sharedCal,measurements,rank_tol,optimize,nullptr));
+}
+void FindKarcherMeanPoint3_28(int nargout, mxArray *out[], int nargin, const mxArray *in[])
+{
+  checkArguments("FindKarcherMeanPoint3",nargout,nargin,1);
+  std::vector<gtsam::Point3>& elements = *unwrap_shared_ptr< std::vector<gtsam::Point3> >(in[0], "ptr_stdvectorgtsam::Point3");
+  out[0] = wrap< Point3 >(FindKarcherMean<gtsam::Point3>(elements));
+}
+void FindKarcherMeanSO3_29(int nargout, mxArray *out[], int nargin, const mxArray *in[])
+{
+  checkArguments("FindKarcherMeanSO3",nargout,nargin,1);
+  std::vector<gtsam::SO3>& elements = *unwrap_shared_ptr< std::vector<gtsam::SO3> >(in[0], "ptr_stdvectorgtsam::SO3");
+  out[0] = wrap_shared_ptr(std::make_shared<gtsam::SO3>(FindKarcherMean<gtsam::SO3>(elements)),"gtsam.SO3", false);
+}
+void FindKarcherMeanSO4_30(int nargout, mxArray *out[], int nargin, const mxArray *in[])
+{
+  checkArguments("FindKarcherMeanSO4",nargout,nargin,1);
+  std::vector<gtsam::SO4>& elements = *unwrap_shared_ptr< std::vector<gtsam::SO4> >(in[0], "ptr_stdvectorgtsam::SO4");
+  out[0] = wrap_shared_ptr(std::make_shared<gtsam::SO4>(FindKarcherMean<gtsam::SO4>(elements)),"gtsam.SO4", false);
+}
+void FindKarcherMeanPose3_31(int nargout, mxArray *out[], int nargin, const mxArray *in[])
+{
+  checkArguments("FindKarcherMeanPose3",nargout,nargin,1);
+  std::vector<gtsam::Pose3>& elements = *unwrap_shared_ptr< std::vector<gtsam::Pose3> >(in[0], "ptr_stdvectorgtsam::Pose3");
+  out[0] = wrap_shared_ptr(std::make_shared<gtsam::Pose3>(FindKarcherMean<gtsam::Pose3>(elements)),"gtsam.Pose3", false);
+}
+void TemplatedFunctionRot3_32(int nargout, mxArray *out[], int nargin, const mxArray *in[])
 {
   checkArguments("TemplatedFunctionRot3",nargout,nargin,1);
   gtsam::Rot3& t = *unwrap_shared_ptr< gtsam::Rot3 >(in[0], "ptr_gtsamRot3");
-  TemplatedFunctionRot3(t);
+  TemplatedFunction<gtsam::Rot3>(t);
 }
 
 void mexFunction(int nargout, mxArray *out[], int nargin, const mxArray *in[])
@@ -212,25 +329,80 @@ void mexFunction(int nargout, mxArray *out[], int nargin, const mxArray *in[])
       DefaultFuncInt_8(nargout, out, nargin-1, in+1);
       break;
     case 9:
-      DefaultFuncString_9(nargout, out, nargin-1, in+1);
+      DefaultFuncInt_9(nargout, out, nargin-1, in+1);
       break;
     case 10:
-      DefaultFuncObj_10(nargout, out, nargin-1, in+1);
+      DefaultFuncInt_10(nargout, out, nargin-1, in+1);
       break;
     case 11:
-      DefaultFuncZero_11(nargout, out, nargin-1, in+1);
+      DefaultFuncString_11(nargout, out, nargin-1, in+1);
       break;
     case 12:
-      DefaultFuncVector_12(nargout, out, nargin-1, in+1);
+      DefaultFuncString_12(nargout, out, nargin-1, in+1);
       break;
     case 13:
-      setPose_13(nargout, out, nargin-1, in+1);
+      DefaultFuncString_13(nargout, out, nargin-1, in+1);
       break;
     case 14:
-      TemplatedFunctionRot3_14(nargout, out, nargin-1, in+1);
+      DefaultFuncObj_14(nargout, out, nargin-1, in+1);
+      break;
+    case 15:
+      DefaultFuncObj_15(nargout, out, nargin-1, in+1);
+      break;
+    case 16:
+      DefaultFuncZero_16(nargout, out, nargin-1, in+1);
+      break;
+    case 17:
+      DefaultFuncZero_17(nargout, out, nargin-1, in+1);
+      break;
+    case 18:
+      DefaultFuncZero_18(nargout, out, nargin-1, in+1);
+      break;
+    case 19:
+      DefaultFuncZero_19(nargout, out, nargin-1, in+1);
+      break;
+    case 20:
+      DefaultFuncVector_20(nargout, out, nargin-1, in+1);
+      break;
+    case 21:
+      DefaultFuncVector_21(nargout, out, nargin-1, in+1);
+      break;
+    case 22:
+      DefaultFuncVector_22(nargout, out, nargin-1, in+1);
+      break;
+    case 23:
+      setPose_23(nargout, out, nargin-1, in+1);
+      break;
+    case 24:
+      setPose_24(nargout, out, nargin-1, in+1);
+      break;
+    case 25:
+      EliminateDiscrete_25(nargout, out, nargin-1, in+1);
+      break;
+    case 26:
+      triangulatePoint3Cal3_S2_26(nargout, out, nargin-1, in+1);
+      break;
+    case 27:
+      triangulatePoint3Cal3_S2_27(nargout, out, nargin-1, in+1);
+      break;
+    case 28:
+      FindKarcherMeanPoint3_28(nargout, out, nargin-1, in+1);
+      break;
+    case 29:
+      FindKarcherMeanSO3_29(nargout, out, nargin-1, in+1);
+      break;
+    case 30:
+      FindKarcherMeanSO4_30(nargout, out, nargin-1, in+1);
+      break;
+    case 31:
+      FindKarcherMeanPose3_31(nargout, out, nargin-1, in+1);
+      break;
+    case 32:
+      TemplatedFunctionRot3_32(nargout, out, nargin-1, in+1);
       break;
     }
   } catch(const std::exception& e) {
+    std::cout.rdbuf(outbuf);
     mexErrMsgTxt(("Exception from gtsam:\n" + std::string(e.what()) + "\n").c_str());
   }
 

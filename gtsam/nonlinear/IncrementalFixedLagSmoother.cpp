@@ -1,0 +1,384 @@
+/* ----------------------------------------------------------------------------
+
+ * GTSAM Copyright 2010, Georgia Tech Research Corporation,
+ * Atlanta, Georgia 30332-0415
+ * All Rights Reserved
+ * Authors: Frank Dellaert, et al. (see THANKS for the full author list)
+
+ * See LICENSE for the license information
+
+ * -------------------------------------------------------------------------- */
+
+/**
+ * @file    IncrementalFixedLagSmoother.cpp
+ * @brief   An iSAM2-based fixed-lag smoother. To the extent possible, this class mimics the iSAM2
+ * interface. However, additional parameters, such as the smoother lag and the timestamp associated
+ * with each variable are needed.
+ *
+ * @author  Michael Kaess, Stephen Williams
+ * @date    Oct 14, 2012
+ */
+
+#include <gtsam/nonlinear/IncrementalFixedLagSmoother.h>
+#include <gtsam/nonlinear/BayesTreeMarginalizationHelper.h>
+#include <gtsam/base/debug.h>
+
+#include <stdexcept>
+
+namespace gtsam {
+
+/* ************************************************************************* */
+void IncrementalFixedLagSmoother::print(const std::string& s,
+    const KeyFormatter& keyFormatter) const {
+  FixedLagSmoother::print(s, keyFormatter);
+  // TODO: What else to print?
+}
+
+/* ************************************************************************* */
+bool IncrementalFixedLagSmoother::equals(const FixedLagSmoother& rhs,
+    double tol) const {
+  const IncrementalFixedLagSmoother* e =
+      dynamic_cast<const IncrementalFixedLagSmoother*>(&rhs);
+  return e != nullptr && FixedLagSmoother::equals(*e, tol)
+      && isam_.equals(e->isam_, tol);
+}
+
+/* ************************************************************************* */
+FixedLagSmoother::Result IncrementalFixedLagSmoother::update(
+    const NonlinearFactorGraph& newFactors, const Values& newTheta,
+    const KeyTimestampMap& timestamps, const FactorIndices& factorsToRemove) {
+  return updateImpl(newFactors, newTheta, timestamps, factorsToRemove, KeySet(), KeySet());
+}
+
+/* ************************************************************************* */
+FixedLagSmoother::Result IncrementalFixedLagSmoother::update(
+    const NonlinearFactorGraph& newFactors, const Values& newTheta,
+    const KeyTimestampMap& timestamps, const FactorIndices& factorsToRemove,
+    const KeySet& keysToRetain, const KeySet& keysToRelease) {
+  return updateImpl(newFactors, newTheta, timestamps, factorsToRemove, keysToRetain, keysToRelease);
+}
+
+/* ************************************************************************* */
+FixedLagSmoother::Result IncrementalFixedLagSmoother::updateImpl(
+    const NonlinearFactorGraph& newFactors, const Values& newTheta,
+    const KeyTimestampMap& timestamps, const FactorIndices& factorsToRemove,
+    const KeySet& keysToRetain, const KeySet& keysToRelease) {
+
+  const bool debug = ISDEBUG("IncrementalFixedLagSmoother update");
+
+  if (debug) {
+    std::cout << "IncrementalFixedLagSmoother::update() Start" << std::endl;
+    PrintSymbolicTree(isam_, "Bayes Tree Before Update:");
+    std::cout << "END" << std::endl;
+  }
+
+  // Validate against the graph at update entry, before timestamps or ISAM2
+  // change. New factors cannot make an invalid removal index valid.
+  for (const size_t factorIndex : factorsToRemove) {
+    if (factorIndex >= isam_.getFactorsUnsafe().size()) {
+      throw std::out_of_range(
+          "IncrementalFixedLagSmoother::update: factor index " +
+          std::to_string(factorIndex) + " is outside the factor graph.");
+    }
+  }
+
+  FastVector<size_t> removedFactors;
+  std::optional<FastMap<Key, int> > constrainedKeys = {};
+
+  const KeySet newFactorKeys = newFactors.keys();
+
+  // Every supplied timestamp must name a value the smoother already holds or
+  // one arriving in this update. A timestamp for any other key describes
+  // nothing the smoother estimates, yet it would enter the map that
+  // getCurrentTimestamp() -- the maximum over all entries -- derives the clock
+  // from, and could silently expire every established state. Validate before
+  // updateKeyTimestampMap(), the first state mutation, so a rejected update
+  // leaves the smoother unchanged.
+  for (const auto& keyTimestamp : timestamps) {
+    const Key key = keyTimestamp.first;
+    if (!isam_.valueExists(key) && !newTheta.exists(key)) {
+      throw std::invalid_argument(
+          "IncrementalFixedLagSmoother::update: timestamp supplied for key '" +
+          DefaultKeyFormatter(key) +
+          "', but no value exists in the smoother or newTheta.");
+    }
+  }
+
+  // Retention names a variable, so it must be one the smoother holds or one
+  // arriving in this update. Validate before any state mutation.
+  for (const Key key : keysToRetain) {
+    if (!isam_.valueExists(key) && !newTheta.exists(key)) {
+      throw std::invalid_argument(
+          "IncrementalFixedLagSmoother::update: cannot retain key '" +
+          DefaultKeyFormatter(key) +
+          "', because no value exists in the smoother or newTheta.");
+    }
+  }
+
+  // Update the Timestamps associated with the factor keys
+  updateKeyTimestampMap(timestamps);
+
+  // Apply retain/release before computing marginalization candidates so that
+  // releasing takes effect immediately in this same update call
+  updateRetainedKeys(keysToRetain, keysToRelease);
+
+  // Get current timestamp
+  double current_timestamp = getCurrentTimestamp();
+
+  if (debug)
+    std::cout << "Current Timestamp: " << current_timestamp << std::endl;
+
+  // Find the set of variables to be marginalized out (retained keys are excluded
+  // inside findKeysBefore, so recently released keys are now eligible here)
+  KeyVector marginalizableKeys = findKeysBefore(
+      current_timestamp - smootherLag_);
+
+  // Values may arrive before the factors that reference them. Reap pending
+  // values when they age out, without passing them to Bayes-tree
+  // marginalization where they have no clique.
+  //
+  // A key is active when some factor references it, either one already in the
+  // system or one arriving now. Asking the variable index directly avoids
+  // materialising that set: it is a KeySet, so building it costs an ordered
+  // insert and an allocation per variable in the whole window, on every
+  // update, and both users below are skipped entirely when nothing is
+  // marginalizable.
+  const VariableIndex& variableIndex = isam_.getVariableIndex();
+  const auto isActive = [&](Key key) {
+    return newFactorKeys.exists(key) ||
+           variableIndex.find(key) != variableIndex.end();
+  };
+  //
+  // An inactive key has no factor referencing it, so after isam_.update() it
+  // still has no clique and marginalizeLeaves, which does nodes_[j], has no
+  // node for it. Two cases, told apart by whether a value exists:
+  //
+  //  - a value exists (pending): reap it below, once ISAM2 has been updated.
+  //  - no value exists: the caller supplied a timestamp for a key that has
+  //    neither a value nor a factor. Nothing in ISAM2 to remove; only the
+  //    timestamp has to go.
+  //
+  // Both leave marginalizableKeys; only the first needs removeVariables.
+  KeyVector expiredPendingKeys;
+  KeyVector staleTimestampKeys;
+  marginalizableKeys.erase(
+      std::remove_if(marginalizableKeys.begin(), marginalizableKeys.end(),
+                     [&](Key key) {
+                       if (isActive(key)) return false;
+                       if (isam_.valueExists(key) || newTheta.exists(key))
+                         expiredPendingKeys.push_back(key);
+                       else
+                         staleTimestampKeys.push_back(key);
+                       return true;
+                     }),
+      marginalizableKeys.end());
+
+  if (debug) {
+    std::cout << "Marginalizable Keys: ";
+    for(Key key: marginalizableKeys) {
+      std::cout << DefaultKeyFormatter(key) << " ";
+    }
+    std::cout << std::endl;
+  }
+
+  // Force iSAM2 to put the marginalizable variables at the beginning
+  createOrderingConstraints(marginalizableKeys, isActive, constrainedKeys);
+
+  if (debug) {
+    std::cout << "Constrained Keys: ";
+    if (constrainedKeys) {
+      for (FastMap<Key, int>::const_iterator iter = constrainedKeys->begin();
+          iter != constrainedKeys->end(); ++iter) {
+        std::cout << DefaultKeyFormatter(iter->first) << "(" << iter->second
+            << ")  ";
+      }
+    }
+    std::cout << std::endl;
+  }
+
+  KeyVector existingMarginalizableKeys;
+  std::copy_if(marginalizableKeys.begin(), marginalizableKeys.end(),
+               std::back_inserter(existingMarginalizableKeys), [&](Key key) {
+                 return variableIndex.find(key) != variableIndex.end();
+               });
+  std::unordered_set<Key> additionalKeys =
+      BayesTreeMarginalizationHelper<ISAM2>::gatherAdditionalKeysToReEliminate(
+          isam_, existingMarginalizableKeys);
+  KeyList additionalMarkedKeys(additionalKeys.begin(), additionalKeys.end());
+
+  // Update iSAM2
+  isamResult_ = isam_.update(newFactors, newTheta, factorsToRemove,
+                             constrainedKeys, {}, additionalMarkedKeys);
+
+  if (debug) {
+    std::cout << "Unused Keys After Update: ";
+    if (not isamResult_.unusedKeys.empty()) {
+      for (auto key : isamResult_.unusedKeys) {
+        std::cout << DefaultKeyFormatter(key) << "  ";
+      }
+    }
+    std::cout << std::endl;
+  }
+
+  if (not isamResult_.unusedKeys.empty()) {
+    // Remove keys that became unused after update from the key-timestamp
+    // database
+    eraseKeyTimestampMap(KeyVector{isamResult_.unusedKeys.begin(),
+                                   isamResult_.unusedKeys.end()});
+
+    if (marginalizableKeys.size() > 0) {
+      // Remove keys that became unused after update from the marginalizable
+      // keys to avoid marginalizing keys that have been removed from ISAM2.
+      marginalizableKeys.erase(
+          std::remove_if(marginalizableKeys.begin(), marginalizableKeys.end(),
+                         [&](const auto& key) {
+                           return isamResult_.unusedKeys.find(key) !=
+                                  isamResult_.unusedKeys.end();
+                         }),
+          marginalizableKeys.end());
+    }
+  }
+
+  if (!expiredPendingKeys.empty()) {
+    isam_.removeVariables(
+        KeySet(expiredPendingKeys.begin(), expiredPendingKeys.end()));
+  }
+
+  if (debug) {
+    PrintSymbolicTree(isam_,
+        "Bayes Tree After Update, Before Marginalization:");
+    std::cout << "END" << std::endl;
+  }
+
+  // Marginalize out any needed variables
+  FactorIndices marginalFactorIndices;  
+  FactorIndices deletedFactorIndices; 
+  if (marginalizableKeys.size() > 0) {
+    FastList<Key> leafKeys(marginalizableKeys.begin(),
+        marginalizableKeys.end());
+    isam_.marginalizeLeaves(leafKeys, &marginalFactorIndices, &deletedFactorIndices);
+  }
+
+  // Remove marginalized keys from the KeyTimestampMap
+  eraseKeyTimestampMap(marginalizableKeys);
+  eraseKeyTimestampMap(expiredPendingKeys);
+  eraseKeyTimestampMap(staleTimestampKeys);
+
+  if (debug) {
+    PrintSymbolicTree(isam_, "Final Bayes Tree:");
+    std::cout << "END" << std::endl;
+  }
+
+  // TODO: Fill in result structure
+  Result result;
+  result.iterations = 1;
+  result.linearVariables = 0;
+  result.nonlinearVariables = 0;
+  result.error = 0;
+  result.marginalFactorIndices = marginalFactorIndices;
+  result.deletedFactorIndices = deletedFactorIndices;
+  result.keysOfDeletedNodes = KeySet(marginalizableKeys);
+  result.expiredPendingKeys = KeySet(expiredPendingKeys);
+
+  if (debug)
+    std::cout << "IncrementalFixedLagSmoother::update() Finish" << std::endl;
+
+  return result;
+}
+
+/* ************************************************************************* */
+void IncrementalFixedLagSmoother::eraseKeysBefore(double timestamp) {
+  TimestampKeyMap::iterator end = timestampKeyMap_.lower_bound(timestamp);
+  TimestampKeyMap::iterator iter = timestampKeyMap_.begin();
+  while (iter != end) {
+    keyTimestampMap_.erase(iter->second);
+    timestampKeyMap_.erase(iter++);
+  }
+}
+
+/* ************************************************************************* */
+void IncrementalFixedLagSmoother::createOrderingConstraints(
+    const KeyVector& marginalizableKeys,
+    const std::function<bool(Key)>& isActive,
+    std::optional<FastMap<Key, int> >& constrainedKeys) const {
+  if (marginalizableKeys.size() > 0) {
+    constrainedKeys = FastMap<Key, int>();
+    // Generate ordering constraints so that the marginalizable variables will be eliminated first
+    // Set all variables to Group1
+    for(const TimestampKeyMap::value_type& timestamp_key: timestampKeyMap_) {
+      if (isActive(timestamp_key.second)) {
+        constrainedKeys->operator[](timestamp_key.second) = 1;
+      }
+    }
+    // Set marginalizable variables to Group0
+    for(Key key: marginalizableKeys) {
+      constrainedKeys->operator[](key) = 0;
+    }
+  }
+}
+
+/* ************************************************************************* */
+void IncrementalFixedLagSmoother::PrintKeySet(const KeySet& keys,
+    const std::string& label) {
+  std::cout << label;
+  for(Key key: keys) {
+    std::cout << " " << DefaultKeyFormatter(key);
+  }
+  std::cout << std::endl;
+}
+
+/* ************************************************************************* */
+void IncrementalFixedLagSmoother::PrintSymbolicFactor(
+    const GaussianFactor::shared_ptr& factor) {
+  std::cout << "f(";
+  for(Key key: factor->keys()) {
+    std::cout << " " << DefaultKeyFormatter(key);
+  }
+  std::cout << " )" << std::endl;
+}
+
+/* ************************************************************************* */
+void IncrementalFixedLagSmoother::PrintSymbolicGraph(
+    const GaussianFactorGraph& graph, const std::string& label) {
+  std::cout << label << std::endl;
+  for(const GaussianFactor::shared_ptr& factor: graph) {
+    PrintSymbolicFactor(factor);
+  }
+}
+
+/* ************************************************************************* */
+void IncrementalFixedLagSmoother::PrintSymbolicTree(const ISAM2& isam,
+    const std::string& label) {
+  std::cout << label << std::endl;
+  if (!isam.roots().empty()) {
+    for(const ISAM2::sharedClique& root: isam.roots()) {
+      PrintSymbolicTreeHelper(root);
+    }
+  } else
+    std::cout << "{Empty Tree}" << std::endl;
+}
+
+/* ************************************************************************* */
+void IncrementalFixedLagSmoother::PrintSymbolicTreeHelper(
+    const ISAM2Clique::shared_ptr& clique, const std::string indent) {
+
+  // Print the current clique
+  std::cout << indent << "P( ";
+  for(Key key: clique->conditional()->frontals()) {
+    std::cout << DefaultKeyFormatter(key) << " ";
+  }
+  if (clique->conditional()->nrParents() > 0)
+    std::cout << "| ";
+  for(Key key: clique->conditional()->parents()) {
+    std::cout << DefaultKeyFormatter(key) << " ";
+  }
+  std::cout << ")" << std::endl;
+
+  // Recursively print all of the children
+  for(const ISAM2Clique::shared_ptr& child: clique->children) {
+    PrintSymbolicTreeHelper(child, indent + " ");
+  }
+}
+
+/* ************************************************************************* */
+} /// namespace gtsam

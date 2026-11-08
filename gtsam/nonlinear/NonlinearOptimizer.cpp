@@ -17,33 +17,68 @@
  */
 
 #include <gtsam/nonlinear/NonlinearOptimizer.h>
+#include <gtsam/nonlinear/NonlinearMultifrontalSolver.h>
 #include <gtsam/nonlinear/internal/NonlinearOptimizerState.h>
+#include <gtsam/nonlinear/LevenbergMarquardtParams.h>
 #include <gtsam/linear/GaussianEliminationTree.h>
 #include <gtsam/linear/VectorValues.h>
 #include <gtsam/linear/SubgraphSolver.h>
 #include <gtsam/linear/PCGSolver.h>
 #include <gtsam/linear/GaussianFactorGraph.h>
+#include <gtsam/linear/GaussianBayesTree.h>
+#include <gtsam/linear/internal/CholmodSolver.h>
 #include <gtsam/linear/VectorValues.h>
+#include <gtsam/symbolic/IndexedJunctionTree.h>
 
-#include <gtsam/inference/Ordering.h>
-
-#include <boost/algorithm/string.hpp>
-#include <boost/shared_ptr.hpp>
 
 #include <stdexcept>
 #include <iostream>
 #include <iomanip>
+#include <vector>
 
 using namespace std;
 
 namespace gtsam {
+
+/// Cache only the symbolic inputs; numerical factors are read at each solve.
+struct NonlinearOptimizer::IndexedJunctionTreeCache {
+  Ordering ordering;
+  std::vector<KeyVector> factorKeys;
+  IndexedJunctionTree tree;
+
+  /// Snapshot the factor slots and ordering used to build the tree.
+  IndexedJunctionTreeCache(const GaussianFactorGraph& graph,
+                           const Ordering& ordering)
+      : ordering(ordering), tree(graph.buildIndexedJunctionTree(ordering)) {
+    factorKeys.reserve(graph.size());
+    for (const auto& factor : graph) {
+      factorKeys.push_back(factor ? factor->keys() : KeyVector{});
+    }
+  }
+
+  /// Compare exact symbolic inputs without allocating or checking numeric data.
+  bool matches(const GaussianFactorGraph& graph,
+               const Ordering& requestedOrdering) const {
+    if (ordering != requestedOrdering || factorKeys.size() != graph.size()) {
+      return false;
+    }
+    for (size_t i = 0; i < graph.size(); ++i) {
+      if (graph[i]) {
+        if (factorKeys[i] != graph[i]->keys()) return false;
+      } else if (!factorKeys[i].empty()) {
+        return false;
+      }
+    }
+    return true;
+  }
+};
 
 /* ************************************************************************* */
 // NOTE(frank): unique_ptr by-value takes ownership, as discussed in
 // http://stackoverflow.com/questions/8114276/
 NonlinearOptimizer::NonlinearOptimizer(const NonlinearFactorGraph& graph,
                                        std::unique_ptr<internal::NonlinearOptimizerState> state)
-    : graph_(graph), state_(std::move(state)) {}
+    : graph_(graph.cloneShared()), state_(std::move(state)) {}
 
 /* ************************************************************************* */
 NonlinearOptimizer::~NonlinearOptimizer() {}
@@ -140,9 +175,17 @@ VectorValues NonlinearOptimizer::solve(const GaussianFactorGraph& gfg,
   // Check which solver we are using
   if (params.isMultifrontal()) {
     // Multifrontal QR or Cholesky (decided by params.getEliminationFunction())
-    if (params.ordering)
-      delta = gfg.optimize(*params.ordering, params.getEliminationFunction());
-    else
+    if (params.ordering) {
+      if (!indexedJunctionTreeCache_ ||
+          !indexedJunctionTreeCache_->matches(gfg, *params.ordering)) {
+        indexedJunctionTreeCache_ =
+            std::make_unique<IndexedJunctionTreeCache>(gfg, *params.ordering);
+      }
+
+      delta = gfg.eliminateMultifrontal(indexedJunctionTreeCache_->tree,
+                                        params.getEliminationFunction())
+                  ->optimize();
+    } else
       delta = gfg.optimize(params.getEliminationFunction());
   } else if (params.isSequential()) {
     // Sequential QR or Cholesky (decided by params.getEliminationFunction())
@@ -160,11 +203,11 @@ VectorValues NonlinearOptimizer::solve(const GaussianFactorGraph& gfg,
       throw std::runtime_error(
           "NonlinearOptimizer::solve: cg parameter has to be assigned ...");
 
-    if (auto pcg = boost::dynamic_pointer_cast<PCGSolverParameters>(
+    if (auto pcg = std::dynamic_pointer_cast<PCGSolverParameters>(
             params.iterativeParams)) {
       delta = PCGSolver(*pcg).optimize(gfg);
     } else if (auto spcg =
-                   boost::dynamic_pointer_cast<SubgraphSolverParameters>(
+                   std::dynamic_pointer_cast<SubgraphSolverParameters>(
                        params.iterativeParams)) {
       if (!params.ordering)
         throw std::runtime_error("SubgraphSolver needs an ordering");
@@ -173,6 +216,14 @@ VectorValues NonlinearOptimizer::solve(const GaussianFactorGraph& gfg,
       throw std::runtime_error(
           "NonlinearOptimizer::solve: special cg parameter type is not handled in LM solver ...");
     }
+  } else if (params.isCholmod()) {
+    if (!params.ordering) {
+      throw std::runtime_error("CHOLMOD requires a variable ordering");
+    }
+    if (!cholmodSolver_) {
+      cholmodSolver_ = std::make_unique<internal::CholmodSolver>();
+    }
+    delta = cholmodSolver_->solve(gfg, *params.ordering);
   } else {
     throw std::runtime_error("NonlinearOptimizer::solve: Optimization parameter is invalid");
   }
@@ -182,8 +233,9 @@ VectorValues NonlinearOptimizer::solve(const GaussianFactorGraph& gfg,
 }
 
 /* ************************************************************************* */
-bool checkConvergence(double relativeErrorTreshold, double absoluteErrorTreshold,
-                      double errorThreshold, double currentError, double newError,
+bool checkConvergence(double relativeErrorThreshold,
+                      double absoluteErrorThreshold, double errorThreshold,
+                      double currentError, double newError,
                       NonlinearOptimizerParams::Verbosity verbosity) {
   if (verbosity >= NonlinearOptimizerParams::ERROR) {
     if (newError <= errorThreshold)
@@ -198,26 +250,26 @@ bool checkConvergence(double relativeErrorTreshold, double absoluteErrorTreshold
   // check if diverges
   double absoluteDecrease = currentError - newError;
   if (verbosity >= NonlinearOptimizerParams::ERROR) {
-    if (absoluteDecrease <= absoluteErrorTreshold)
+    if (absoluteDecrease <= absoluteErrorThreshold)
       cout << "absoluteDecrease: " << setprecision(12) << absoluteDecrease << " < "
-           << absoluteErrorTreshold << endl;
+           << absoluteErrorThreshold << endl;
     else
       cout << "absoluteDecrease: " << setprecision(12) << absoluteDecrease
-           << " >= " << absoluteErrorTreshold << endl;
+           << " >= " << absoluteErrorThreshold << endl;
   }
 
   // calculate relative error decrease and update currentError
   double relativeDecrease = absoluteDecrease / currentError;
   if (verbosity >= NonlinearOptimizerParams::ERROR) {
-    if (relativeDecrease <= relativeErrorTreshold)
+    if (relativeDecrease <= relativeErrorThreshold)
       cout << "relativeDecrease: " << setprecision(12) << relativeDecrease << " < "
-           << relativeErrorTreshold << endl;
+           << relativeErrorThreshold << endl;
     else
       cout << "relativeDecrease: " << setprecision(12) << relativeDecrease
-           << " >= " << relativeErrorTreshold << endl;
+           << " >= " << relativeErrorThreshold << endl;
   }
-  bool converged = (relativeErrorTreshold && (relativeDecrease <= relativeErrorTreshold)) ||
-                   (absoluteDecrease <= absoluteErrorTreshold);
+  bool converged = (relativeErrorThreshold && (relativeDecrease <= relativeErrorThreshold)) ||
+                   (absoluteDecrease <= absoluteErrorThreshold);
   if (verbosity >= NonlinearOptimizerParams::TERMINATION && converged) {
     if (absoluteDecrease >= 0.0)
       cout << "converged" << endl;
@@ -226,9 +278,9 @@ bool checkConvergence(double relativeErrorTreshold, double absoluteErrorTreshold
 
     cout << "errorThreshold: " << newError << " <? " << errorThreshold << endl;
     cout << "absoluteDecrease: " << setprecision(12) << absoluteDecrease << " <? "
-         << absoluteErrorTreshold << endl;
+         << absoluteErrorThreshold << endl;
     cout << "relativeDecrease: " << setprecision(12) << relativeDecrease << " <? "
-         << relativeErrorTreshold << endl;
+         << relativeErrorThreshold << endl;
   }
   return converged;
 }
@@ -239,4 +291,35 @@ GTSAM_EXPORT bool checkConvergence(const NonlinearOptimizerParams& params, doubl
   return checkConvergence(params.relativeErrorTol, params.absoluteErrorTol, params.errorTol,
                           currentError, newError, params.verbosity);
 }
+/* ************************************************************************* */
+bool NonlinearOptimizer::ensureMultifrontalSolver(
+    const NonlinearOptimizerParams& params, const Values& values) const {
+  if (params.linearSolverType != NonlinearOptimizerParams::MULTIFRONTAL_SOLVER)
+    return false;
+  if (!nonlinearMultifrontalSolver_) {
+    NonlinearMultifrontalSolver::DampingParams dampingParams;
+    if (auto lmParams =
+            dynamic_cast<const LevenbergMarquardtParams*>(&params)) {
+      dampingParams.exactHessianDiagonal =
+          lmParams->dampingParams.exactHessianDiagonal;
+      dampingParams.diagonalDamping = lmParams->dampingParams.diagonalDamping;
+      dampingParams.minDiagonal = lmParams->dampingParams.minDiagonal;
+      dampingParams.maxDiagonal = lmParams->dampingParams.maxDiagonal;
+    }
+
+    // Lazily create the solver.
+    // Use default ordering or create one.
+    Ordering ordering;
+    if (params.ordering)
+      ordering = *params.ordering;
+    else
+      ordering = Ordering::Create(params.orderingType, graph());
+
+    // Construct it (may throw if unsupported).
+    nonlinearMultifrontalSolver_ =
+        std::make_unique<NonlinearMultifrontalSolver>(
+            graph(), values, ordering, params.multifrontalParams, dampingParams);
+  }
+  return true;
 }
+} // namespace gtsam

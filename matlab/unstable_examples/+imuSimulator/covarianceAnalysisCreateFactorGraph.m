@@ -27,7 +27,7 @@ for i=0:length(measurements)
     if options.includeIMUFactors == 1
       currentVelKey = symbol('v', 0);
       currentVel = values.atPoint3(currentVelKey);
-      graph.add(PriorFactorLieVector(currentVelKey, LieVector(currentVel), noiseModels.noiseVel));
+      graph.add(PriorFactorVector(currentVelKey, currentVel, noiseModels.noiseVel));
       
       currentBiasKey = symbol('b', 0);
       currentBias = values.atPoint3(currentBiasKey);
@@ -38,10 +38,10 @@ for i=0:length(measurements)
     projectionFactorSeenBy = [];
     if options.includeCameraFactors == 1
       for j=1:options.numberOfLandmarks
-        SmartProjectionFactors(j) = SmartProjectionPose3Factor(0.01);
+        SmartProjectionFactors(j) = SmartProjectionPoseFactorCal3_S2(0.01);
         % Use constructor with default values, but express the pose of the
         % camera as a 90 degree rotation about the X axis
-%         SmartProjectionFactors(j) = SmartProjectionPose3Factor( ...
+%         SmartProjectionFactors(j) = SmartProjectionPoseFactorCal3_S2( ...
 %             1, ...      % rankTol
 %             -1, ...     % linThreshold
 %             false, ...  % manageDegeneracy

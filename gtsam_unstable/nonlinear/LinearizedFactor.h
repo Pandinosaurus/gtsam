@@ -17,6 +17,10 @@
 
 #pragma once
 
+#include <gtsam/config.h>
+
+#ifdef GTSAM_ALLOW_DEPRECATED_SINCE_V43
+
 #include <vector>
 #include <gtsam_unstable/dllexport.h>
 #include <gtsam/nonlinear/NonlinearFactor.h>
@@ -27,6 +31,8 @@ namespace gtsam {
 
 /**
  * A base factor class for the Jacobian and Hessian linearized factors
+ * @deprecated Use LinearContainerFactor to place linear factors in nonlinear
+ * graphs.
  */
 class GTSAM_UNSTABLE_EXPORT LinearizedGaussianFactor : public NonlinearFactor {
 public:
@@ -35,7 +41,7 @@ public:
   typedef LinearizedGaussianFactor This;
 
   /** shared pointer for convenience */
-  typedef boost::shared_ptr<LinearizedGaussianFactor> shared_ptr;
+  typedef std::shared_ptr<LinearizedGaussianFactor> shared_ptr;
 
 protected:
 
@@ -45,7 +51,7 @@ protected:
 public:
 
   /** default constructor for serialization */
-  LinearizedGaussianFactor() {};
+  LinearizedGaussianFactor() = default;
 
   /**
    * @param gaussian:   A jacobian or hessian factor
@@ -53,12 +59,13 @@ public:
    */
   LinearizedGaussianFactor(const GaussianFactor::shared_ptr& gaussian, const Values& lin_points);
 
-  ~LinearizedGaussianFactor() override {};
+  ~LinearizedGaussianFactor() override = default;
 
   // access functions
   const Values& linearizationPoint() const { return lin_points_; }
 
 private:
+#if GTSAM_ENABLE_BOOST_SERIALIZATION
   /** Serialization function */
   friend class boost::serialization::access;
   template<class ARCHIVE>
@@ -67,12 +74,14 @@ private:
         boost::serialization::base_object<Base>(*this));
     ar & BOOST_SERIALIZATION_NVP(lin_points_);
   }
+#endif
 
 };
 
 /**
  * A factor that takes a linear, Jacobian factor and inserts it into
  * a nonlinear graph.
+ * @deprecated Use LinearContainerFactor.
  */
 class GTSAM_UNSTABLE_EXPORT LinearizedJacobianFactor : public LinearizedGaussianFactor {
 
@@ -82,7 +91,7 @@ public:
   typedef LinearizedJacobianFactor This;
 
   /** shared pointer for convenience */
-  typedef boost::shared_ptr<LinearizedJacobianFactor> shared_ptr;
+  typedef std::shared_ptr<LinearizedJacobianFactor> shared_ptr;
 
   typedef VerticalBlockMatrix::Block ABlock;
   typedef VerticalBlockMatrix::constBlock constABlock;
@@ -113,7 +122,7 @@ public:
 
   /// @return a deep copy of this factor
   gtsam::NonlinearFactor::shared_ptr clone() const override {
-    return boost::static_pointer_cast<gtsam::NonlinearFactor>(
+    return std::static_pointer_cast<gtsam::NonlinearFactor>(
         gtsam::NonlinearFactor::shared_ptr(new This(*this))); }
 
   // Testable
@@ -126,11 +135,11 @@ public:
 
   // access functions
   const constBVector b() const { return Ab_(size()).col(0); }
-  const constABlock A() const { return Ab_.range(0, size()); };
+  const constABlock A() const { return Ab_.range(0, size()); }
   const constABlock A(Key key) const { return Ab_(std::find(begin(), end(), key) - begin()); }
 
   /** get the dimension of the factor (number of rows on linearization) */
-  size_t dim() const override { return Ab_.rows(); };
+  size_t dim() const override { return Ab_.rows(); }
 
   /** Calculate the error of the factor */
   double error(const Values& c) const override;
@@ -140,20 +149,22 @@ public:
    * Reimplemented from NoiseModelFactor to directly copy out the
    * matrices and only update the RHS b with an updated residual
    */
-  boost::shared_ptr<GaussianFactor> linearize(const Values& c) const override;
+  std::shared_ptr<GaussianFactor> linearize(const Values& c) const override;
 
   /** (A*x-b) */
   Vector error_vector(const Values& c) const;
 
 private:
-  /** Serialization function */
+#if GTSAM_ENABLE_BOOST_SERIALIZATION
   friend class boost::serialization::access;
+  /** Serialization function */
   template<class ARCHIVE>
   void serialize(ARCHIVE & ar, const unsigned int /*version*/) {
     ar & boost::serialization::make_nvp("LinearizedJacobianFactor",
         boost::serialization::base_object<Base>(*this));
     ar & BOOST_SERIALIZATION_NVP(Ab_);
   }
+#endif
 };
 
 /// traits
@@ -164,6 +175,7 @@ struct traits<LinearizedJacobianFactor> : public Testable<LinearizedJacobianFact
 /**
  * A factor that takes a linear, Hessian factor and inserts it into
  * a nonlinear graph.
+ * @deprecated Use LinearContainerFactor.
  */
 class GTSAM_UNSTABLE_EXPORT LinearizedHessianFactor : public LinearizedGaussianFactor {
 
@@ -173,7 +185,7 @@ public:
   typedef LinearizedHessianFactor This;
 
   /** shared pointer for convenience */
-  typedef boost::shared_ptr<LinearizedHessianFactor> shared_ptr;
+  typedef std::shared_ptr<LinearizedHessianFactor> shared_ptr;
 
   /** hessian block data types */
   typedef SymmetricBlockMatrix::Block Block; ///< A block from the Hessian matrix
@@ -203,7 +215,7 @@ public:
 
   /// @return a deep copy of this factor
   gtsam::NonlinearFactor::shared_ptr clone() const override {
-    return boost::static_pointer_cast<gtsam::NonlinearFactor>(
+    return std::static_pointer_cast<gtsam::NonlinearFactor>(
         gtsam::NonlinearFactor::shared_ptr(new This(*this))); }
 
   // Testable
@@ -236,7 +248,7 @@ public:
     return info_.aboveDiagonalRange(0, size(), size(), size() + 1).col(0);
   }
 
-  /** Return a copy of the block at (j1,j2) of the <emph>upper-triangular part</emph> of the
+  /** Return a copy of the block at (j1,j2) of the <em>upper-triangular part</em> of the
    * squared term \f$ H \f$, no data is copied.  See HessianFactor class documentation
    * above to explain that only the upper-triangular part of the information matrix is stored
    * and returned by this function.
@@ -252,7 +264,7 @@ public:
     return info_.block(J1, J2);
   }
 
-  /** Return the <emph>upper-triangular part</emph> of the full squared term, as described above.
+  /** Return the <em>upper-triangular part</em> of the full squared term, as described above.
    * See HessianFactor class documentation above to explain that only the
    * upper-triangular part of the information matrix is stored and returned by this function.
    */
@@ -271,10 +283,11 @@ public:
    * Reimplemented from NoiseModelFactor to directly copy out the
    * matrices and only update the RHS b with an updated residual
    */
-  boost::shared_ptr<GaussianFactor> linearize(const Values& c) const override;
+  std::shared_ptr<GaussianFactor> linearize(const Values& c) const override;
 
 private:
   /** Serialization function */
+#if GTSAM_ENABLE_BOOST_SERIALIZATION
   friend class boost::serialization::access;
   template<class ARCHIVE>
   void serialize(ARCHIVE & ar, const unsigned int /*version*/) {
@@ -282,6 +295,7 @@ private:
         boost::serialization::base_object<Base>(*this));
     ar & BOOST_SERIALIZATION_NVP(info_);
   }
+#endif
 };
 
 /// traits
@@ -290,3 +304,5 @@ struct traits<LinearizedHessianFactor> : public Testable<LinearizedHessianFactor
 };
 
 } // \namespace aspn
+
+#endif  // GTSAM_ALLOW_DEPRECATED_SINCE_V43

@@ -18,11 +18,10 @@
  */
 
 #include <CppUnitLite/TestHarness.h>
+#include <gtsam/base/MatrixConstants.h>
 #include <gtsam/base/Testable.h>
 #include <gtsam/base/TestableAssertions.h>
-#include <gtsam/basis/Basis.h>
-#include <gtsam/basis/BasisFactors.h>
-#include <gtsam/basis/Chebyshev2.h>
+#include <gtsam/geometry/Rot3.h>
 #include <gtsam/inference/Symbol.h>
 #include <gtsam/nonlinear/FunctorizedFactor.h>
 #include <gtsam/nonlinear/LevenbergMarquardtOptimizer.h>
@@ -49,7 +48,7 @@ class MultiplyFunctor {
   MultiplyFunctor(double m) : m_(m) {}
 
   Matrix operator()(const Matrix &X,
-                    OptionalJacobian<-1, -1> H = boost::none) const {
+                    OptionalJacobian<-1, -1> H = {}) const {
     if (H) *H = m_ * Matrix::Identity(X.rows() * X.cols(), X.rows() * X.cols());
     return m_ * X;
   }
@@ -59,8 +58,8 @@ class MultiplyFunctor {
 class ProjectionFunctor {
  public:
   Vector operator()(const Matrix &A, const Vector &x,
-                    OptionalJacobian<-1, -1> H1 = boost::none,
-                    OptionalJacobian<-1, -1> H2 = boost::none) const {
+                    OptionalJacobian<-1, -1> H1 = {},
+                    OptionalJacobian<-1, -1> H2 = {}) const {
     if (H1) {
       H1->resize(x.size(), A.size());
       *H1 << I_3x3, I_3x3, I_3x3;
@@ -162,7 +161,7 @@ TEST(FunctorizedFactor, Functional) {
   Matrix X = Matrix::Identity(3, 3);
   Matrix measurement = multiplier * Matrix::Identity(3, 3);
 
-  std::function<Matrix(Matrix, boost::optional<Matrix &>)> functional =
+  std::function<Matrix(Matrix, OptionalMatrixType)> functional =
       MultiplyFunctor(multiplier);
   auto factor =
       MakeFunctorizedFactor<Matrix>(key, measurement, model, functional);
@@ -180,7 +179,7 @@ TEST(FunctorizedFactor, Lambda) {
   Matrix measurement = multiplier * Matrix::Identity(3, 3);
 
   auto lambda = [multiplier](const Matrix &X,
-                             OptionalJacobian<-1, -1> H = boost::none) {
+                             OptionalJacobian<-1, -1> H = {}) {
     if (H)
       *H = multiplier *
            Matrix::Identity(X.rows() * X.cols(), X.rows() * X.cols());
@@ -235,8 +234,7 @@ TEST(FunctorizedFactor, Functional2) {
   Vector3 x(1, 2, 3);
   Vector measurement = A * x;
 
-  std::function<Matrix(Matrix, Matrix, boost::optional<Matrix &>,
-                       boost::optional<Matrix &>)>
+  std::function<Matrix(Matrix, Matrix, OptionalMatrixType, OptionalMatrixType)>
       functional = ProjectionFunctor();
   auto factor = MakeFunctorizedFactor2<Matrix, Vector>(keyA, keyx, measurement,
                                                        model2, functional);
@@ -254,8 +252,8 @@ TEST(FunctorizedFactor, Lambda2) {
   Matrix measurement = A * x;
 
   auto lambda = [](const Matrix &A, const Vector &x,
-                   OptionalJacobian<-1, -1> H1 = boost::none,
-                   OptionalJacobian<-1, -1> H2 = boost::none) {
+                   OptionalJacobian<-1, -1> H1 = {},
+                   OptionalJacobian<-1, -1> H2 = {}) {
     if (H1) {
       H1->resize(x.size(), A.size());
       *H1 << I_3x3, I_3x3, I_3x3;
@@ -272,134 +270,49 @@ TEST(FunctorizedFactor, Lambda2) {
   EXPECT(assert_equal(Vector::Zero(3), error, 1e-9));
 }
 
-const size_t N = 2;
+/* ************************************************************************* */
+namespace manifold_output {
 
-//******************************************************************************
-TEST(FunctorizedFactor, Print2) {
-  const size_t M = 1;
+const auto model = noiseModel::Isotropic::Sigma(3, 1.0);
 
-  Vector measured = Vector::Ones(M) * 42;
+// Verifies the Local Jacobian is chained onto a unary projection Jacobian.
+TEST(FunctorizedFactor, UnaryManifoldOutputJacobian) {
+  const Rot3 measurement = Rot3::Expmap(Vector3(-0.3, 0.1, 0.2));
+  const Rot3 value = Rot3::Expmap(Vector3(0.4, -0.2, 0.1));
+  auto identity = [](const Rot3& rotation,
+                     OptionalJacobian<3, 3> H = {}) {
+    if (H) *H = I_3x3;
+    return rotation;
+  };
+  const auto factor =
+      MakeFunctorizedFactor<Rot3>(key, measurement, model, identity);
 
-  auto model = noiseModel::Isotropic::Sigma(M, 1.0);
-  VectorEvaluationFactor<Chebyshev2, M> priorFactor(key, measured, model, N, 0);
-
-  string expected =
-      "  keys = { X0 }\n"
-      "  noise model: unit (1) \n"
-      "FunctorizedFactor(X0)\n"
-      "  measurement: [\n"
-      "	42\n"
-      "]\n"
-      "  noise model sigmas: 1\n";
-
-  EXPECT(assert_print_equal(expected, priorFactor));
+  Values values;
+  values.insert<Rot3>(key, value);
+  EXPECT_CORRECT_FACTOR_JACOBIANS(factor, values, 1e-7, 1e-5);
 }
 
-//******************************************************************************
-TEST(FunctorizedFactor, VectorEvaluationFactor) {
-  const size_t M = 4;
+// Verifies the Local Jacobian is chained onto both binary projection Jacobians.
+TEST(FunctorizedFactor, BinaryManifoldOutputJacobians) {
+  const Rot3 measurement = Rot3::Expmap(Vector3(-0.2, 0.3, 0.1));
+  const Rot3 value1 = Rot3::Expmap(Vector3(0.4, -0.1, 0.2));
+  const Rot3 value2 = Rot3::Expmap(Vector3(-0.1, 0.2, -0.3));
+  auto compose = [](const Rot3& rotation1, const Rot3& rotation2,
+                    OptionalJacobian<3, 3> H1 = {},
+                    OptionalJacobian<3, 3> H2 = {}) {
+    return rotation1.compose(rotation2, H1, H2);
+  };
+  const auto factor = MakeFunctorizedFactor2<Rot3, Rot3>(
+      keyA, keyx, measurement, model, compose);
 
-  Vector measured = Vector::Zero(M);
-
-  auto model = noiseModel::Isotropic::Sigma(M, 1.0);
-  VectorEvaluationFactor<Chebyshev2, M> priorFactor(key, measured, model, N, 0);
-
-  NonlinearFactorGraph graph;
-  graph.add(priorFactor);
-
-  ParameterMatrix<M> stateMatrix(N);
-
-  Values initial;
-  initial.insert<ParameterMatrix<M>>(key, stateMatrix);
-
-  LevenbergMarquardtParams parameters;
-  parameters.verbosity = NonlinearOptimizerParams::SILENT;
-  parameters.verbosityLM = LevenbergMarquardtParams::SILENT;
-  parameters.setMaxIterations(20);
-  Values result =
-      LevenbergMarquardtOptimizer(graph, initial, parameters).optimize();
-
-  EXPECT_DOUBLES_EQUAL(0, graph.error(result), 1e-9);
+  Values values;
+  values.insert<Rot3>(keyA, value1);
+  values.insert<Rot3>(keyx, value2);
+  EXPECT_CORRECT_FACTOR_JACOBIANS(factor, values, 1e-7, 1e-5);
 }
 
-//******************************************************************************
-TEST(FunctorizedFactor, VectorComponentFactor) {
-  const int P = 4;
-  const size_t i = 2;
-  const double measured = 0.0, t = 3.0, a = 2.0, b = 4.0;
-  auto model = noiseModel::Isotropic::Sigma(1, 1.0);
-  VectorComponentFactor<Chebyshev2, P> controlPrior(key, measured, model, N, i,
-                                                    t, a, b);
-
-  NonlinearFactorGraph graph;
-  graph.add(controlPrior);
-
-  ParameterMatrix<P> stateMatrix(N);
-
-  Values initial;
-  initial.insert<ParameterMatrix<P>>(key, stateMatrix);
-
-  LevenbergMarquardtParams parameters;
-  parameters.verbosity = NonlinearOptimizerParams::SILENT;
-  parameters.verbosityLM = LevenbergMarquardtParams::SILENT;
-  parameters.setMaxIterations(20);
-  Values result =
-      LevenbergMarquardtOptimizer(graph, initial, parameters).optimize();
-
-  EXPECT_DOUBLES_EQUAL(0, graph.error(result), 1e-9);
-}
-
-//******************************************************************************
-TEST(FunctorizedFactor, VecDerivativePrior) {
-  const size_t M = 4;
-
-  Vector measured = Vector::Zero(M);
-  auto model = noiseModel::Isotropic::Sigma(M, 1.0);
-  VectorDerivativeFactor<Chebyshev2, M> vecDPrior(key, measured, model, N, 0);
-
-  NonlinearFactorGraph graph;
-  graph.add(vecDPrior);
-
-  ParameterMatrix<M> stateMatrix(N);
-
-  Values initial;
-  initial.insert<ParameterMatrix<M>>(key, stateMatrix);
-
-  LevenbergMarquardtParams parameters;
-  parameters.verbosity = NonlinearOptimizerParams::SILENT;
-  parameters.verbosityLM = LevenbergMarquardtParams::SILENT;
-  parameters.setMaxIterations(20);
-  Values result =
-      LevenbergMarquardtOptimizer(graph, initial, parameters).optimize();
-
-  EXPECT_DOUBLES_EQUAL(0, graph.error(result), 1e-9);
-}
-
-//******************************************************************************
-TEST(FunctorizedFactor, ComponentDerivativeFactor) {
-  const size_t M = 4;
-
-  double measured = 0;
-  auto model = noiseModel::Isotropic::Sigma(1, 1.0);
-  ComponentDerivativeFactor<Chebyshev2, M> controlDPrior(key, measured, model,
-                                                         N, 0, 0);
-
-  NonlinearFactorGraph graph;
-  graph.add(controlDPrior);
-
-  Values initial;
-  ParameterMatrix<M> stateMatrix(N);
-  initial.insert<ParameterMatrix<M>>(key, stateMatrix);
-
-  LevenbergMarquardtParams parameters;
-  parameters.verbosity = NonlinearOptimizerParams::SILENT;
-  parameters.verbosityLM = LevenbergMarquardtParams::SILENT;
-  parameters.setMaxIterations(20);
-  Values result =
-      LevenbergMarquardtOptimizer(graph, initial, parameters).optimize();
-
-  EXPECT_DOUBLES_EQUAL(0, graph.error(result), 1e-9);
-}
+}  // namespace manifold_output
+/* ************************************************************************* */
 
 /* ************************************************************************* */
 int main() {

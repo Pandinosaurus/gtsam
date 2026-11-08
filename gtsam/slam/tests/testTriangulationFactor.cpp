@@ -25,18 +25,13 @@
 #include <gtsam/base/numericalDerivative.h>
 #include <CppUnitLite/TestHarness.h>
 
-#include <boost/assign.hpp>
-#include <boost/assign/std/vector.hpp>
-#include <boost/bind/bind.hpp>
-
 using namespace std;
 using namespace gtsam;
-using namespace boost::assign;
 using namespace std::placeholders;
 
 // Some common constants
-static const boost::shared_ptr<Cal3_S2> sharedCal = //
-    boost::make_shared<Cal3_S2>(1500, 1200, 0, 640, 480);
+static const std::shared_ptr<Cal3_S2> sharedCal = //
+    std::make_shared<Cal3_S2>(1500, 1200, 0, 640, 480);
 
 // Looking along X-axis, 1 meter above ground plane (x-y)
 static const Rot3 upright = Rot3::Ypr(-M_PI / 2, 0., -M_PI / 2);
@@ -62,7 +57,7 @@ TEST( triangulation, TriangulationFactor ) {
   factor.evaluateError(landmark, HActual);
 
   Matrix HExpected = numericalDerivative11<Vector,Point3>(
-      std::bind(&Factor::evaluateError, &factor, std::placeholders::_1, boost::none), landmark);
+		  [&factor](const Point3& l) { return factor.evaluateError(l);}, landmark);
 
   // Verify the Jacobians are correct
   CHECK(assert_equal(HExpected, HActual, 1e-3));
@@ -85,8 +80,8 @@ TEST( triangulation, TriangulationFactorStereo ) {
   Matrix HActual;
   factor.evaluateError(landmark, HActual);
 
-  Matrix HExpected = numericalDerivative11<Vector,Point3>(
-      std::bind(&Factor::evaluateError, &factor, std::placeholders::_1, boost::none), landmark);
+  Matrix HExpected = numericalDerivative11<Vector, Point3>(
+		  [&factor](const Point3& l) { return factor.evaluateError(l);}, landmark);
 
   // Verify the Jacobians are correct
   CHECK(assert_equal(HExpected, HActual, 1e-3));
@@ -94,7 +89,7 @@ TEST( triangulation, TriangulationFactorStereo ) {
   // compare same problem against expression factor
   Expression<StereoPoint2>::UnaryFunction<Point3>::type f =
       std::bind(&StereoCamera::project2, camera2, std::placeholders::_1,
-                boost::none, std::placeholders::_2);
+                nullptr, std::placeholders::_2);
   Expression<Point3> point_(pointKey);
   Expression<StereoPoint2> project2_(f, point_);
 
@@ -108,6 +103,48 @@ TEST( triangulation, TriangulationFactorStereo ) {
   Vector error2 = eFactor.unwhitenedError(values, HActual2);
   EXPECT(assert_equal(error1, error2));
   EXPECT(assert_equal(HActual1[0], HActual2[0]));
+}
+
+//******************************************************************************
+// Spherical scalar weighting must use the same residual chart as error().
+TEST(triangulation, SphericalRobustGradient) {
+  using namespace noiseModel;
+  const SphericalCamera camera(Pose3::Identity());
+  const Unit3 measured(2, -3, 1);
+  const auto gaussian = Gaussian::SqrtInformation(
+      Matrix2{{5.0, 0.7}, {0.0, 3.0}});
+  const std::vector<SharedNoiseModel> models{
+      gaussian,
+      Robust::Create(mEstimator::Huber::Create(0.5, mEstimator::Base::Block),
+                     gaussian),
+      Robust::Create(mEstimator::Huber::Create(0.5, mEstimator::Base::Scalar),
+                     gaussian),
+      Robust::Create(mEstimator::AsymmetricCauchy::Create(
+                         0.5, mEstimator::Base::Scalar), gaussian)};
+  for (const auto& model : models) {
+    const TriangulationFactor<SphericalCamera> factor(camera, measured, model, 0);
+    for (const Point3& point : {Point3(1, 2, 4), Point3(-1, -2, -4)}) {
+      Matrix H;
+      factor.evaluateError(point, H);
+      const auto residual = [&factor](const Point3& p) {
+        return factor.evaluateError(p);
+      };
+      EXPECT(assert_equal(numericalDerivative11<Vector, Point3>(residual, point),
+                          H, 1e-6));
+      const auto objective = [&factor](const Point3& p) {
+        Values values;
+        values.insert(0, p);
+        return factor.error(values);
+      };
+      Values values;
+      values.insert(0, point);
+      const Vector expected =
+          numericalDerivative11<double, Point3>(objective, point).transpose();
+      EXPECT(assert_equal(expected,
+                          factor.linearize(values)->gradientAtZero().at(0),
+                          1e-6));
+    }
+  }
 }
 
 //******************************************************************************

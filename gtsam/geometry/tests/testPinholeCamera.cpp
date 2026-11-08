@@ -15,14 +15,14 @@
  * @brief test PinholeCamera class
  */
 
-#include <gtsam/geometry/PinholeCamera.h>
-#include <gtsam/geometry/Cal3_S2.h>
-#include <gtsam/geometry/Cal3Bundler.h>
-#include <gtsam/geometry/Pose2.h>
+#include <CppUnitLite/TestHarness.h>
+#include <gtsam/base/MatrixConstants.h>
 #include <gtsam/base/Testable.h>
 #include <gtsam/base/numericalDerivative.h>
-
-#include <CppUnitLite/TestHarness.h>
+#include <gtsam/geometry/Cal3Bundler.h>
+#include <gtsam/geometry/Cal3_S2.h>
+#include <gtsam/geometry/PinholeCamera.h>
+#include <gtsam/geometry/Pose2.h>
 
 #include <cmath>
 #include <iostream>
@@ -65,9 +65,8 @@ TEST(PinholeCamera, Create) {
   EXPECT(assert_equal(camera, Camera::Create(pose,K, actualH1, actualH2)));
 
   // Check derivative
-  std::function<Camera(Pose3, Cal3_S2)> f =  //
-      std::bind(Camera::Create, std::placeholders::_1, std::placeholders::_2,
-                boost::none, boost::none);
+  auto f = std::bind(Camera::Create, std::placeholders::_1,
+                     std::placeholders::_2, nullptr, nullptr);
   Matrix numericalH1 = numericalDerivative21<Camera,Pose3,Cal3_S2>(f,pose,K);
   EXPECT(assert_equal(numericalH1, actualH1, 1e-9));
   Matrix numericalH2 = numericalDerivative22<Camera,Pose3,Cal3_S2>(f,pose,K);
@@ -81,8 +80,7 @@ TEST(PinholeCamera, Pose) {
   EXPECT(assert_equal(pose, camera.getPose(actualH)));
 
   // Check derivative
-  std::function<Pose3(Camera)> f =  //
-      std::bind(&Camera::getPose, std::placeholders::_1, boost::none);
+  auto f = std::bind(&Camera::getPose, std::placeholders::_1, nullptr);
   Matrix numericalH = numericalDerivative11<Pose3,Camera>(f,camera);
   EXPECT(assert_equal(numericalH, actualH, 1e-9));
 }
@@ -117,7 +115,7 @@ TEST( PinholeCamera, lookat)
   Camera camera2 = Camera::Lookat(C2, Point3(0,0,0), Point3(0,0,1));
 
   Matrix R = camera2.pose().rotation().matrix();
-  Matrix I = trans(R)*R;
+  Matrix I = R.transpose() * R;
   EXPECT(assert_equal(I, I_3x3));
 }
 

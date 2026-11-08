@@ -1,0 +1,1080 @@
+/* ----------------------------------------------------------------------------
+
+ * GTSAM Copyright 2010, Georgia Tech Research Corporation,
+ * Atlanta, Georgia 30332-0415
+ * All Rights Reserved
+ * Authors: Frank Dellaert, et al. (see THANKS for the full author list)
+
+ * See LICENSE for the license information
+
+ * -------------------------------------------------------------------------- */
+
+/*
+ * testTableFactor.cpp
+ *
+ *  @date Feb 15, 2023
+ *  @author Yoonwoo Kim
+ */
+
+#include <CppUnitLite/TestHarness.h>
+#include <gtsam/base/Testable.h>
+#include <gtsam/base/TestableAssertions.h>
+#include <gtsam/base/serializationTestHelpers.h>
+#include <gtsam/discrete/DiscreteConditional.h>
+#include <gtsam/discrete/DiscreteDistribution.h>
+#include <gtsam/discrete/Signature.h>
+#include <gtsam/discrete/TableDistribution.h>
+#include <gtsam/discrete/TableFactor.h>
+#include <gtsam/inference/Ordering.h>
+
+#include <algorithm>
+#include <chrono>
+#include <numeric>
+#include <random>
+
+using namespace std;
+using namespace gtsam;
+
+vector<double> genArr(double dropout, size_t size) {
+  random_device rd;
+  mt19937 g(rd());
+  vector<double> dropoutmask(size);  // Chance of 0
+
+  uniform_int_distribution<> dist(1, 9);
+  auto gen = [&dist, &g]() { return dist(g); };
+  generate(dropoutmask.begin(), dropoutmask.end(), gen);
+
+  fill_n(dropoutmask.begin(), dropoutmask.size() * (dropout), 0);
+  shuffle(dropoutmask.begin(), dropoutmask.end(), g);
+
+  return dropoutmask;
+}
+
+map<double, pair<chrono::microseconds, chrono::microseconds>> measureTime(
+    DiscreteKeys keys1, DiscreteKeys keys2, size_t size) {
+  vector<double> dropouts = {0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9};
+  map<double, pair<chrono::microseconds, chrono::microseconds>> measured_times;
+
+  for (auto dropout : dropouts) {
+    vector<double> arr1 = genArr(dropout, size);
+    vector<double> arr2 = genArr(dropout, size);
+    TableFactor f1(keys1, arr1);
+    TableFactor f2(keys2, arr2);
+    DecisionTreeFactor f1_dt(keys1, arr1);
+    DecisionTreeFactor f2_dt(keys2, arr2);
+
+    // measure time TableFactor
+    auto tb_start = chrono::high_resolution_clock::now();
+    TableFactor actual = f1 * f2;
+    auto tb_end = chrono::high_resolution_clock::now();
+    auto tb_time_diff =
+        chrono::duration_cast<chrono::microseconds>(tb_end - tb_start);
+
+    // measure time DT
+    auto dt_start = chrono::high_resolution_clock::now();
+    DecisionTreeFactor actual_dt = f1_dt * f2_dt;
+    auto dt_end = chrono::high_resolution_clock::now();
+    auto dt_time_diff =
+        chrono::duration_cast<chrono::microseconds>(dt_end - dt_start);
+
+    bool flag = true;
+    for (auto assignmentVal : actual_dt.enumerate()) {
+      flag = actual_dt(assignmentVal.first) != actual(assignmentVal.first);
+      if (flag) {
+        std::cout << "something is wrong: " << std::endl;
+        assignmentVal.first.print();
+        std::cout << "dt: " << actual_dt(assignmentVal.first) << std::endl;
+        std::cout << "tb: " << actual(assignmentVal.first) << std::endl;
+        break;
+      }
+    }
+    if (flag) break;
+    measured_times[dropout] = make_pair(tb_time_diff, dt_time_diff);
+  }
+  return measured_times;
+}
+
+void printTime(map<double, pair<chrono::microseconds, chrono::microseconds>>
+                   measured_time) {
+  for (auto&& kv : measured_time) {
+    cout << "dropout: " << kv.first
+         << " | TableFactor time: " << kv.second.first.count()
+         << " | DecisionTreeFactor time: " << kv.second.second.count() << endl;
+  }
+}
+
+/* ************************************************************************* */
+// Check constructors for TableFactor.
+TEST(TableFactor, constructors) {
+  // Declare a bunch of keys
+  DiscreteKey X(0, 2), Y(1, 3), Z(2, 2), A(3, 5);
+
+  // Create factors
+  TableFactor f_zeros(A, {0, 0, 0, 0, 1});
+  TableFactor f1(X, {2, 8});
+  TableFactor f2(X & Y, "2 5 3 6 4 7");
+  TableFactor f3(X & Y & Z, "2 5 3 6 4 7 25 55 35 65 45 75");
+  EXPECT_LONGS_EQUAL(1, f1.size());
+  EXPECT_LONGS_EQUAL(2, f2.size());
+  EXPECT_LONGS_EQUAL(3, f3.size());
+
+  DiscreteValues values;
+  values[0] = 1;  // x
+  values[1] = 2;  // y
+  values[2] = 1;  // z
+  values[3] = 4;  // a
+  EXPECT_DOUBLES_EQUAL(1, f_zeros(values), 1e-9);
+  EXPECT_DOUBLES_EQUAL(8, f1(values), 1e-9);
+  EXPECT_DOUBLES_EQUAL(7, f2(values), 1e-9);
+  EXPECT_DOUBLES_EQUAL(75, f3(values), 1e-9);
+
+  // Assert that error = -log(value)
+  EXPECT_DOUBLES_EQUAL(-log(f1(values)), f1.error(values), 1e-9);
+
+  // Construct from DiscreteConditional
+  DiscreteConditional conditional(X | Y = "1/1 2/3 1/4");
+  TableFactor f4(conditional);
+  // Manually constructed via inspection and comparison to DecisionTreeFactor
+  TableFactor expected(X & Y, "0.5 0.4 0.2 0.5 0.6 0.8");
+  EXPECT(assert_equal(expected, f4));
+
+  // Test for 9=3x3 values.
+  DiscreteKey V(0, 3), W(1, 3), O(100, 3);
+  DiscreteConditional conditional5(V | W = "1/2/3 5/6/7 9/10/11");
+  TableFactor f5(conditional5);
+
+  std::string expected_values =
+      "0.166667 0.277778 0.3 0.333333 0.333333 0.333333 0.5 0.388889 0.366667";
+  TableFactor expected_f5(V & W, expected_values);
+  EXPECT(assert_equal(expected_f5, f5, 1e-6));
+
+  TableFactor f5_with_wrong_keys(V & O, expected_values);
+  EXPECT(assert_inequal(f5_with_wrong_keys, f5, 1e-9));
+}
+
+/* ************************************************************************* */
+// Check conversion from DecisionTreeFactor.
+TEST(TableFactor, Conversion) {
+  /* This is the DecisionTree we are using
+  Choice(m2)
+  0 Choice(m1)
+  0 0 Leaf    0
+  0 1 Choice(m0)
+  0 1 0 Leaf    0
+  0 1 1 Leaf 0.14649446  // 3
+  1 Choice(m1)
+  1 0 Choice(m0)
+  1 0 0 Leaf    0
+  1 0 1 Leaf 0.14648756  // 5
+  1 1 Choice(m0)
+  1 1 0 Leaf 0.14649446  // 6
+  1 1 1 Leaf 0.23918345  // 7
+  */
+  DiscreteKeys dkeys = {{0, 2}, {1, 2}, {2, 2}};
+  DecisionTreeFactor dtf(
+      dkeys, std::vector<double>{0, 0, 0, 0.14649446, 0, 0.14648756, 0.14649446,
+                                 0.23918345});
+
+  TableFactor tf(dtf.discreteKeys(), dtf);
+
+  EXPECT(assert_equal(dtf, tf.toDecisionTreeFactor()));
+  EXPECT(assert_equal(tf,
+                      static_cast<const DiscreteFactor&>(dtf).toTableFactor()));
+  EXPECT(
+      assert_equal(tf, static_cast<const DiscreteFactor&>(tf).toTableFactor()));
+
+  const DiscreteKey distributionKey(3, 2);
+  const DiscreteConditional distribution(1,
+                                         TableFactor(distributionKey, "1 3"));
+  EXPECT(assert_equal(
+      TableFactor(distributionKey, "0.25 0.75"),
+      static_cast<const DiscreteFactor&>(distribution).toTableFactor()));
+
+  // Test for correct construction when keys are not in reverse order.
+  // This is possible in conditionals e.g. P(x1 | x0)
+  DiscreteKey X(1, 2), Y(0, 2);
+  DiscreteConditional dtf2(
+      X, {Y}, std::vector<double>{0.33333333, 0.6, 0.66666667, 0.4});
+
+  TableFactor tf2(dtf2);
+  // GTSAM_PRINT(dtf2);
+  // GTSAM_PRINT(tf2);
+  // GTSAM_PRINT(tf2.toDecisionTreeFactor());
+
+  // Check for ADT equality since the order of keys is irrelevant
+  EXPECT(assert_equal<AlgebraicDecisionTree<Key>>(dtf2.toDecisionTreeFactor(),
+                                                  tf2.toDecisionTreeFactor()));
+}
+
+/* ************************************************************************* */
+// toDecisionTreeFactor builds from the nonzero entries; check it against the
+// dense construction for random keys (not in label order), cardinalities, and
+// sparsity levels.
+TEST(TableFactor, ConversionMatchesDenseTable) {
+  std::mt19937 rng(42);
+  for (size_t trial = 0; trial < 300; trial++) {
+    const size_t nrKeys = 1 + rng() % 6;
+    std::vector<Key> labels(12);
+    std::iota(labels.begin(), labels.end(), 0);
+    std::shuffle(labels.begin(), labels.end(), rng);
+    DiscreteKeys dkeys;
+    size_t size = 1;
+    for (size_t i = 0; i < nrKeys; i++) {
+      dkeys.emplace_back(labels[i], 1 + rng() % 4);
+      size *= dkeys.back().second;
+    }
+    const double density = (rng() % 5) / 4.0;
+    std::vector<double> table(size, 0.0);
+    for (double& value : table) {
+      if ((rng() % 1000) < density * 1000) value = 1 + rng() % 9;
+    }
+
+    const TableFactor tf(dkeys, table);
+    EXPECT(assert_equal(DecisionTreeFactor(dkeys, table),
+                        tf.toDecisionTreeFactor()));
+  }
+}
+
+/* ************************************************************************* */
+// A sparse table over many keys converts without enumerating every assignment.
+TEST(TableFactor, ConversionOfSparseTableOverManyKeys) {
+  const size_t nrKeys = 26;
+  DiscreteKeys dkeys;
+  for (size_t i = 0; i < nrKeys; i++) dkeys.emplace_back(i, 2);
+
+  SparseVector table(size_t(1) << nrKeys);
+  table.insert(5) = 1.0;
+  table.insert(12345) = 2.0;
+  table.insert((size_t(1) << nrKeys) - 1) = 3.0;
+  const TableFactor tf(dkeys, table);
+
+  const DecisionTreeFactor dtf = tf.toDecisionTreeFactor();
+  EXPECT(dtf.nrLeaves() < 100);
+  for (const uint64_t index : {uint64_t(0), uint64_t(5), uint64_t(12345),
+                               (uint64_t(1) << nrKeys) - 1}) {
+    DiscreteValues values;
+    for (size_t i = 0; i < nrKeys; i++) {
+      values[dkeys[i].first] = (index >> (nrKeys - 1 - i)) & 1;
+    }
+    EXPECT_DOUBLES_EQUAL(tf(values), dtf(values), 1e-12);
+  }
+}
+
+/* ************************************************************************* */
+// A table over more than 32 binary keys has indices beyond the 32-bit range.
+TEST(TableFactor, SparseTableBeyond32Keys) {
+  const size_t nrKeys = 40;
+  DiscreteKeys dkeys;
+  for (size_t i = 0; i < nrKeys; i++) dkeys.emplace_back(i, 2);
+
+  // Convert a linear index into an assignment, first key most significant.
+  const auto assignment = [&](uint64_t index) {
+    DiscreteValues values;
+    for (size_t i = 0; i < nrKeys; i++) {
+      values[dkeys[i].first] = (index >> (nrKeys - 1 - i)) & 1;
+    }
+    return values;
+  };
+
+  const uint64_t size = uint64_t(1) << nrKeys;
+  const uint64_t largeIndex = (uint64_t(1) << 35) + 7;
+  SparseVector table(size);
+  table.insert(5) = 1.0;
+  table.insert(largeIndex) = 2.0;
+  table.insert(size - 1) = 3.0;
+  const TableFactor tf(dkeys, table);
+
+  // EXPECT_LONGS_EQUAL would truncate 2^40 to a 32-bit long on Windows.
+  EXPECT(tf.sparseTable().size() == static_cast<int64_t>(size));
+  EXPECT_LONGS_EQUAL(3, tf.sparseTable().nonZeros());
+  EXPECT_DOUBLES_EQUAL(1.0, tf(assignment(5)), 1e-12);
+  EXPECT_DOUBLES_EQUAL(2.0, tf(assignment(largeIndex)), 1e-12);
+  EXPECT_DOUBLES_EQUAL(3.0, tf(assignment(size - 1)), 1e-12);
+  EXPECT_DOUBLES_EQUAL(0.0, tf(assignment(largeIndex + 1)), 1e-12);
+  // Indices that alias a stored entry modulo 2^32 must remain zero.
+  EXPECT_DOUBLES_EQUAL(0.0, tf(assignment(7)), 1e-12);
+  EXPECT_DOUBLES_EQUAL(0.0, tf(assignment((uint64_t(1) << 32) + 5)), 1e-12);
+  EXPECT_DOUBLES_EQUAL(3.0, tf.max(), 1e-12);
+
+  // Multiplying by a factor on the first key keeps the large indices intact.
+  const TableFactor scale(dkeys[0], std::vector<double>{1.0, 10.0});
+  const TableFactor product = tf * scale;
+  EXPECT_DOUBLES_EQUAL(1.0, product(assignment(5)), 1e-12);
+  EXPECT_DOUBLES_EQUAL(2.0, product(assignment(largeIndex)), 1e-12);
+  EXPECT_DOUBLES_EQUAL(30.0, product(assignment(size - 1)), 1e-12);
+}
+
+/* ************************************************************************* */
+namespace subset_operations {
+
+// Subset products and quotients agree with trees for every key order and subset.
+TEST(TableFactor, SubsetOperationsAcrossKeyOrders) {
+  const DiscreteKeys sortedKeys{{0, 2}, {2, 3}, {5, 2}};
+  DiscreteKeys keys = sortedKeys;
+  do {
+    const vector<double> values{0, 2, 3, 0, 5, 6, 7, 0, 9, 10, 0, 12};
+    const TableFactor joint(keys, values);
+    const DecisionTreeFactor tree(keys, values);
+    for (unsigned mask = 0; mask < 8; ++mask) {
+      DiscreteKeys subset;
+      size_t cardinality = 1;
+      for (size_t i = 0; i < keys.size(); ++i) {
+        if (mask & (1U << i)) {
+          subset.push_back(keys[i]);
+          cardinality *= keys[i].second;
+        }
+      }
+      std::reverse(subset.begin(), subset.end());
+      for (bool sparse : {false, true}) {
+        vector<double> weights(cardinality);
+        for (size_t i = 0; i < cardinality; ++i)
+          weights[i] = sparse && i % 3 == 1 ? 0 : i + 2;
+        const TableFactor factor(subset, weights);
+        const DecisionTreeFactor treeFactor = subset.empty()
+            ? DecisionTreeFactor(subset, DecisionTreeFactor::ADT(weights[0]))
+            : DecisionTreeFactor(subset, weights);
+        const auto product = joint * factor;
+        const auto quotient = joint / factor;
+        EXPECT(product.keys() == sortedKeys.indices());
+        EXPECT(quotient.keys() == sortedKeys.indices());
+        EXPECT(assert_equal(tree * treeFactor, product.toDecisionTreeFactor()));
+        EXPECT(assert_equal(tree / treeFactor, quotient.toDecisionTreeFactor()));
+      }
+    }
+  } while (std::next_permutation(keys.begin(), keys.end()));
+}
+
+// Generic apply evaluates stored zeros but not missing entries, and drops zero
+// results.
+TEST(TableFactor, SubsetApplyUsesStoredZeros) {
+  const DiscreteKey A(0, 2), B(1, 3);
+  SparseVector jointEntries(6);
+  jointEntries.insertBack(0) = 0;
+  jointEntries.insertBack(1) = 2;
+  jointEntries.insertBack(2) = 7;
+  jointEntries.insertBack(3) = 4;
+  jointEntries.insertBack(4) = 0;
+  jointEntries.insertBack(5) = 6;
+  const TableFactor joint(A & B, jointEntries);
+  SparseVector entries(3);
+  entries.insertBack(0) = 0;
+  entries.insertBack(2) = 7;
+  const TableFactor subset(DiscreteKeys{B}, entries);
+  const auto result = joint.apply(subset, [](double a, double b) { return a - b; });
+  // Indices 0 and 2 compute to zero and are dropped. Index 3 exists only
+  // because the subset's zero for B=0 is stored. Indices 1 and 4 are never
+  // evaluated because the subset has no entry for B=1.
+  SparseVector expected(6);
+  expected.insertBack(3) = 4;
+  expected.insertBack(5) = -1;
+  EXPECT_LONGS_EQUAL(2, result.nrValues());
+  EXPECT(assert_equal(TableFactor(A & B, expected), result));
+  vector<int64_t> storedIndices;
+  const SparseVector stored = result.sparseTable();
+  for (SparseVector::InnerIterator entry(stored); entry; ++entry)
+    storedIndices.push_back(entry.index());
+  EXPECT(storedIndices == vector<int64_t>({3, 5}));
+
+  const TableFactor empty(DiscreteKeys{B}, SparseVector(3));
+  EXPECT_LONGS_EQUAL(0, joint.apply(empty, Ring::add).nrValues());
+}
+
+// Strides, rather than metadata key order, determine subset lookup indices.
+TEST(TableFactor, SubsetApplyWithMetadataOrder) {
+  const DiscreteKey A(0, 2), B(1, 3);
+  const TableFactor original(B & A, "1 2 3 4 5 6");
+  const TableFactor metadata(A & B, original);
+  const TableFactor subset(B, "2 0 3");
+  EXPECT(assert_equal(TableFactor(A & B, "2 0 15 4 0 18"), metadata * subset));
+}
+
+// The right-hand table's stored order can differ from its metadata as well.
+TEST(TableFactor, SubsetApplyWithRightMetadataOrder) {
+  const DiscreteKey A(0, 2), B(1, 3), C(2, 2);
+  const TableFactor joint(B & A & C, "1 2 3 4 5 6 7 8 9 10 11 12");
+  for (const char* weights : {"2 3 5 7", "2 0 5 7"}) {
+    const TableFactor original(C & A, weights);
+    const TableFactor subset(A & C, original);
+    const auto product = joint * subset;
+    const auto quotient = joint / subset;
+    for (size_t a = 0; a < A.second; ++a) {
+      for (size_t b = 0; b < B.second; ++b) {
+        for (size_t c = 0; c < C.second; ++c) {
+          const DiscreteValues values{{A.first, a}, {B.first, b}, {C.first, c}};
+          EXPECT_DOUBLES_EQUAL(joint(values) * subset(values), product(values),
+                              1e-12);
+          EXPECT_DOUBLES_EQUAL(Ring::div(joint(values), subset(values)),
+                              quotient(values), 1e-12);
+        }
+      }
+    }
+  }
+}
+
+// An empty joint keeps its full scope when combined with a nonempty subset.
+TEST(TableFactor, SubsetApplyWithEmptyJoint) {
+  const DiscreteKey A(0, 2), B(1, 3);
+  const TableFactor empty(A & B, SparseVector(6));
+  const TableFactor subset(B, "2 3 4");
+  const auto result = empty.apply(subset, Ring::add);
+  EXPECT_LONGS_EQUAL(0, result.nrValues());
+  EXPECT(result.keys() == KeyVector({A.first, B.first}));
+  EXPECT_LONGS_EQUAL(6, result.sparseTable().size());
+}
+
+// Unit-cardinality dimensions neither contribute to nor interrupt indexing.
+TEST(TableFactor, SubsetApplyWithUnitCardinalities) {
+  const DiscreteKey A(0, 2), U(1, 1), B(2, 3), V(3, 1), C(4, 2);
+  for (const DiscreteKeys& keys :
+       vector<DiscreteKeys>{{A, U, B, V, C}, {C, V, B, U, A}}) {
+    const TableFactor joint(keys, "1 0 3 4 0 6 7 8 0 10 11 12");
+    const auto tree = joint.toDecisionTreeFactor();
+    for (const DiscreteKeys& subsetKeys :
+         vector<DiscreteKeys>{{B, V, C}, {C, V, B}, {U, V}}) {
+      size_t cardinality = 1;
+      for (const auto& key : subsetKeys) cardinality *= key.second;
+      vector<double> weights(cardinality);
+      for (size_t i = 0; i < cardinality; ++i)
+        weights[i] = i % 3 == 1 ? 0 : i + 2;
+      const TableFactor subset(subsetKeys, weights);
+      const DecisionTreeFactor treeSubset(subsetKeys, weights);
+      EXPECT(assert_equal(tree * treeSubset,
+                          (joint * subset).toDecisionTreeFactor()));
+      EXPECT(assert_equal(tree / treeSubset,
+                          (joint / subset).toDecisionTreeFactor()));
+    }
+  }
+}
+
+// Disjoint, overlapping, and larger right-hand scopes retain general joins.
+TEST(TableFactor, ApplyWithoutRightSubset) {
+  const DiscreteKey A(0, 2), B(1, 3), C(2, 2);
+  const TableFactor joint(B & A, "1 0 3 4 0 6");
+  const auto tree = joint.toDecisionTreeFactor();
+  for (const DiscreteKeys& keys :
+       vector<DiscreteKeys>{{C}, {B, C}, {C, B, A}}) {
+    size_t cardinality = 1;
+    for (const auto& key : keys) cardinality *= key.second;
+    vector<double> weights(cardinality);
+    for (size_t i = 0; i < cardinality; ++i)
+      weights[i] = i % 3 == 0 ? 0 : i + 2;
+    const TableFactor other(keys, weights);
+    const DecisionTreeFactor treeOther(keys, weights);
+    EXPECT(assert_equal(tree * treeOther, (joint * other).toDecisionTreeFactor()));
+    EXPECT(assert_equal(tree / treeOther, (joint / other).toDecisionTreeFactor()));
+  }
+}
+
+}  // namespace subset_operations
+
+/* ************************************************************************* */
+// Check multiplication with a table-backed conditional in both operand orders.
+TEST(TableFactor, TableConditionalMultiplication) {
+  const DiscreteKey key(0, 3);
+  const auto table =
+      std::make_shared<TableFactor>(key, std::vector<double>{2.0, 3.0, 4.0});
+  const auto conditional =
+      std::make_shared<DiscreteConditional>(1, TableFactor(key, "1 2 3"));
+  const TableFactor expected(key, std::vector<double>{1.0 / 3.0, 1.0, 2.0});
+
+  const auto tableFirst =
+      std::dynamic_pointer_cast<TableFactor>(table->multiply(conditional));
+  const auto conditionalFirst =
+      std::dynamic_pointer_cast<TableFactor>(conditional->multiply(table));
+
+  CHECK(tableFirst);
+  CHECK(conditionalFirst);
+  EXPECT(assert_equal(expected, *tableFirst));
+  EXPECT(assert_equal(expected, *conditionalFirst));
+}
+
+/* ************************************************************************* */
+TEST(TableFactor, Empty) {
+  DiscreteKey X(1, 2);
+
+  auto single = TableFactor({X}, "1 1").sum(1);
+  // Should not throw a segfault
+  auto expected_single = DecisionTreeFactor(X, "1 1").sum(1);
+  EXPECT(assert_equal(expected_single->toDecisionTreeFactor(),
+                      single->toDecisionTreeFactor()));
+
+  auto empty = TableFactor({X}, "0 0").sum(1);
+  // Should not throw a segfault
+  auto expected_empty = DecisionTreeFactor(X, "0 0").sum(1);
+  EXPECT(assert_equal(expected_empty->toDecisionTreeFactor(),
+                      empty->toDecisionTreeFactor()));
+}
+
+/* ************************************************************************* */
+// Check multiplication between two TableFactors.
+TEST(TableFactor, multiplication) {
+  DiscreteKey v0(0, 2), v1(1, 2), v2(2, 2);
+
+  // Multiply with a DiscreteDistribution, i.e., Bayes Law!
+  DiscreteDistribution prior(v1 % "1/3");
+  TableFactor f1(v0 & v1, "1 2 3 4");
+  DecisionTreeFactor expected(v0 & v1, "0.25 1.5 0.75 3");
+  CHECK(assert_equal(expected, static_cast<DecisionTreeFactor>(prior) *
+                                   f1.toDecisionTreeFactor()));
+  CHECK(assert_equal(TableFactor(v0 & v1, "0.25 1.5 0.75 3"), f1 * prior));
+
+  // Multiply two factors
+  TableFactor f2(v1 & v2, "5 6 7 8");
+  TableFactor actual = f1 * f2;
+  TableFactor expected2(v0 & v1 & v2, "5 6 14 16 15 18 28 32");
+  CHECK(assert_equal(expected2, actual));
+
+  DiscreteKey A(0, 3), B(1, 2), C(2, 2);
+  TableFactor f_zeros1(A & C, "0 0 0 2 0 3");
+  TableFactor f_zeros2(B & C, "4 0 0 5");
+  TableFactor actual_zeros = f_zeros1 * f_zeros2;
+  TableFactor expected3(A & B & C, "0 0 0 0 0 0 0 10 0 0 0 15");
+  CHECK(assert_equal(expected3, actual_zeros));
+}
+
+/* ************************************************************************* */
+// Benchmark which compares runtime of multiplication of two TableFactors
+// and two DecisionTreeFactors given sparsity from dense to 90% sparsity.
+// NOTE: Enable to run.
+TEST_DISABLED(TableFactor, benchmark) {
+  DiscreteKey A(0, 5), B(1, 2), C(2, 5), D(3, 2), E(4, 5), F(5, 2), G(6, 3),
+      H(7, 2), I(8, 5), J(9, 7), K(10, 2), L(11, 3);
+
+  // 100
+  DiscreteKeys one_1 = {A, B, C, D};
+  DiscreteKeys one_2 = {C, D, E, F};
+  map<double, pair<chrono::microseconds, chrono::microseconds>> time_map_1 =
+      measureTime(one_1, one_2, 100);
+  printTime(time_map_1);
+  // 200
+  DiscreteKeys two_1 = {A, B, C, D, F};
+  DiscreteKeys two_2 = {B, C, D, E, F};
+  map<double, pair<chrono::microseconds, chrono::microseconds>> time_map_2 =
+      measureTime(two_1, two_2, 200);
+  printTime(time_map_2);
+  // 300
+  DiscreteKeys three_1 = {A, B, C, D, G};
+  DiscreteKeys three_2 = {C, D, E, F, G};
+  map<double, pair<chrono::microseconds, chrono::microseconds>> time_map_3 =
+      measureTime(three_1, three_2, 300);
+  printTime(time_map_3);
+  // 400
+  DiscreteKeys four_1 = {A, B, C, D, F, H};
+  DiscreteKeys four_2 = {B, C, D, E, F, H};
+  map<double, pair<chrono::microseconds, chrono::microseconds>> time_map_4 =
+      measureTime(four_1, four_2, 400);
+  printTime(time_map_4);
+  // 500
+  DiscreteKeys five_1 = {A, B, C, D, I};
+  DiscreteKeys five_2 = {C, D, E, F, I};
+  map<double, pair<chrono::microseconds, chrono::microseconds>> time_map_5 =
+      measureTime(five_1, five_2, 500);
+  printTime(time_map_5);
+  // 600
+  DiscreteKeys six_1 = {A, B, C, D, F, G};
+  DiscreteKeys six_2 = {B, C, D, E, F, G};
+  map<double, pair<chrono::microseconds, chrono::microseconds>> time_map_6 =
+      measureTime(six_1, six_2, 600);
+  printTime(time_map_6);
+  // 700
+  DiscreteKeys seven_1 = {A, B, C, D, J};
+  DiscreteKeys seven_2 = {C, D, E, F, J};
+  map<double, pair<chrono::microseconds, chrono::microseconds>> time_map_7 =
+      measureTime(seven_1, seven_2, 700);
+  printTime(time_map_7);
+  // 800
+  DiscreteKeys eight_1 = {A, B, C, D, F, H, K};
+  DiscreteKeys eight_2 = {B, C, D, E, F, H, K};
+  map<double, pair<chrono::microseconds, chrono::microseconds>> time_map_8 =
+      measureTime(eight_1, eight_2, 800);
+  printTime(time_map_8);
+  // 900
+  DiscreteKeys nine_1 = {A, B, C, D, G, L};
+  DiscreteKeys nine_2 = {C, D, E, F, G, L};
+  map<double, pair<chrono::microseconds, chrono::microseconds>> time_map_9 =
+      measureTime(nine_1, nine_2, 900);
+  printTime(time_map_9);
+}
+
+/* ************************************************************************* */
+// Check sum and max over frontals.
+TEST(TableFactor, sum_max) {
+  DiscreteKey v0(0, 3), v1(1, 2);
+  TableFactor f1(v0 & v1, "1 2  3 4  5 6");
+
+  TableFactor expected(v1, "9 12");
+  auto actual = std::dynamic_pointer_cast<TableFactor>(f1.sum(1));
+  CHECK(actual);
+  CHECK(assert_equal(expected, *actual, 1e-5));
+
+  TableFactor expected2(v1, "5 6");
+  auto actual2 = std::dynamic_pointer_cast<TableFactor>(f1.max(1));
+  CHECK(actual2);
+  CHECK(assert_equal(expected2, *actual2));
+
+  TableFactor f2(v1 & v0, "1 2  3 4  5 6");
+  auto actual22 = std::dynamic_pointer_cast<TableFactor>(f2.sum(1));
+  CHECK(actual22);
+}
+
+/* ************************************************************************* */
+// Check enumerate yields the correct list of assignment/value pairs.
+TEST(TableFactor, enumerate) {
+  DiscreteKey A(12, 3), B(5, 2);
+  TableFactor f(A & B, "1 2  3 4  5 6");
+  auto actual = f.enumerate();
+  std::vector<std::pair<DiscreteValues, double>> expected;
+  DiscreteValues values;
+  for (size_t a : {0, 1, 2}) {
+    for (size_t b : {0, 1}) {
+      values[12] = a;
+      values[5] = b;
+      expected.emplace_back(values, f(values));
+    }
+  }
+  EXPECT(actual == expected);
+}
+
+/* ************************************************************************* */
+// Check pruning of the decision tree works as expected.
+TEST(TableFactor, Prune) {
+  DiscreteKey A(1, 2), B(2, 2), C(3, 2);
+  TableFactor f(A & B & C, "1 5 3 7 2 6 4 8");
+
+  // Only keep the leaves with the top 5 values.
+  size_t maxNrAssignments = 5;
+  auto pruned5 =
+      std::dynamic_pointer_cast<TableFactor>(f.prune(maxNrAssignments));
+
+  // Pruned leaves should be 0
+  TableFactor expected(A & B & C, "0 5 0 7 0 6 4 8");
+  EXPECT(assert_equal(expected, *pruned5));
+
+  // Check for more extreme pruning where we only keep the top 2 leaves
+  maxNrAssignments = 2;
+  auto pruned2 =
+      std::dynamic_pointer_cast<TableFactor>(f.prune(maxNrAssignments));
+  TableFactor expected2(A & B & C, "0 0 0 7 0 0 0 8");
+  EXPECT(assert_equal(expected2, *pruned2));
+
+  DiscreteKey D(4, 2);
+  TableFactor factor(
+      D & C & B & A,
+      "0.0 0.0 0.0 0.60658897 0.61241912 0.61241969 0.61247685 0.61247742 0.0 "
+      "0.0 0.0 0.99995287 1.0 1.0 1.0 1.0");
+
+  TableFactor expected3(D & C & B & A,
+                        "0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 "
+                        "0.999952870000 1.0 1.0 1.0 1.0");
+  maxNrAssignments = 5;
+  auto pruned3 =
+      std::dynamic_pointer_cast<TableFactor>(factor.prune(maxNrAssignments));
+  EXPECT(assert_equal(expected3, *pruned3));
+}
+
+// Check that pruning keeps every value tied with the N-th largest, matching
+// DecisionTreeFactor::prune.
+TEST(TableFactor, PruneKeepsTies) {
+  DiscreteKey X(0, 5);
+  TableFactor f(X, "0.2 0.2 0.1 0.2 0.3");
+
+  auto pruned = std::dynamic_pointer_cast<TableFactor>(f.prune(3));
+
+  TableFactor expected(X, "0.2 0.2 0.0 0.2 0.3");
+  EXPECT(assert_equal(expected, *pruned));
+}
+
+/* ************************************************************************* */
+// Check markdown representation looks as expected.
+TEST(TableFactor, markdown) {
+  DiscreteKey A(12, 3), B(5, 2);
+  TableFactor f(A & B, "1 2  3 4  5 6");
+  string expected =
+      "|A|B|value|\n"
+      "|:-:|:-:|:-:|\n"
+      "|0|0|1|\n"
+      "|0|1|2|\n"
+      "|1|0|3|\n"
+      "|1|1|4|\n"
+      "|2|0|5|\n"
+      "|2|1|6|\n";
+  auto formatter = [](Key key) { return key == 12 ? "A" : "B"; };
+  string actual = f.markdown(formatter);
+  EXPECT(actual == expected);
+}
+
+/* ************************************************************************* */
+// Check markdown representation with a value formatter.
+TEST(TableFactor, markdownWithValueFormatter) {
+  DiscreteKey A(12, 3), B(5, 2);
+  TableFactor f(A & B, "1 2  3 4  5 6");
+  string expected =
+      "|A|B|value|\n"
+      "|:-:|:-:|:-:|\n"
+      "|Zero|-|1|\n"
+      "|Zero|+|2|\n"
+      "|One|-|3|\n"
+      "|One|+|4|\n"
+      "|Two|-|5|\n"
+      "|Two|+|6|\n";
+  auto keyFormatter = [](Key key) { return key == 12 ? "A" : "B"; };
+  TableFactor::Names names{{12, {"Zero", "One", "Two"}}, {5, {"-", "+"}}};
+  string actual = f.markdown(keyFormatter, names);
+  EXPECT(actual == expected);
+}
+
+/* ************************************************************************* */
+// Check html representation with a value formatter.
+TEST(TableFactor, htmlWithValueFormatter) {
+  DiscreteKey A(12, 3), B(5, 2);
+  TableFactor f(A & B, "1 2  3 4  5 6");
+  string expected =
+      "<div>\n"
+      "<table class='TableFactor'>\n"
+      "  <thead>\n"
+      "    <tr><th>A</th><th>B</th><th>value</th></tr>\n"
+      "  </thead>\n"
+      "  <tbody>\n"
+      "    <tr><th>Zero</th><th>-</th><td>1</td></tr>\n"
+      "    <tr><th>Zero</th><th>+</th><td>2</td></tr>\n"
+      "    <tr><th>One</th><th>-</th><td>3</td></tr>\n"
+      "    <tr><th>One</th><th>+</th><td>4</td></tr>\n"
+      "    <tr><th>Two</th><th>-</th><td>5</td></tr>\n"
+      "    <tr><th>Two</th><th>+</th><td>6</td></tr>\n"
+      "  </tbody>\n"
+      "</table>\n"
+      "</div>";
+  auto keyFormatter = [](Key key) { return key == 12 ? "A" : "B"; };
+  TableFactor::Names names{{12, {"Zero", "One", "Two"}}, {5, {"-", "+"}}};
+  string actual = f.html(keyFormatter, names);
+  EXPECT(actual == expected);
+}
+
+/* ************************************************************************* */
+TEST(TableFactor, Unary) {
+  // Declare a bunch of keys
+  DiscreteKey X(0, 2), Y(1, 3);
+
+  // Create factors
+  TableFactor f(X & Y, "2 5 3 6 2 7");
+  auto op = [](const double x) { return 2 * x; };
+  auto g = f.apply(op);
+
+  TableFactor expected(X & Y, "4 10 6 12 4 14");
+  EXPECT(assert_equal(g, expected));
+
+  auto sq_op = [](const double x) { return x * x; };
+  auto g_sq = f.apply(sq_op);
+  TableFactor expected_sq(X & Y, "4 25 9 36 4 49");
+  EXPECT(assert_equal(g_sq, expected_sq));
+}
+
+/* ************************************************************************* */
+TEST(TableFactor, UnaryAssignment) {
+  // Declare a bunch of keys
+  DiscreteKey X(0, 2), Y(1, 3);
+
+  // Create factors
+  TableFactor f(X & Y, "2 5 3 6 2 7");
+  auto op = [](const Assignment<Key>& key, const double x) { return 2 * x; };
+  auto g = f.apply(op);
+
+  TableFactor expected(X & Y, "4 10 6 12 4 14");
+  EXPECT(assert_equal(g, expected));
+}
+
+/* ************************************************************************* */
+// Check that zeros produced by an operation are not stored in the result.
+TEST(TableFactor, OperationsDropZeros) {
+  const DiscreteKey X(0, 2), Y(1, 2);
+  const TableFactor f(X & Y, "0.1 0.2 0.3 0.4");
+
+  // Unary ops that zero out values below 0.25.
+  const auto threshold = [](const double& x) { return x < 0.25 ? 0.0 : x; };
+  EXPECT_LONGS_EQUAL(2, f.apply(threshold).nrValues());
+  const auto thresholdAssignment = [&](const Assignment<Key>&,
+                                       const double& x) { return threshold(x); };
+  EXPECT_LONGS_EQUAL(2, f.apply(thresholdAssignment).nrValues());
+
+  // A binary op whose products underflow to zero.
+  const TableFactor tiny(X & Y, "1e-200 1e-200 1 1");
+  const auto product = [](const double& a, const double& b) {
+    return a * b * 1e-200;
+  };
+  EXPECT_LONGS_EQUAL(2, f.apply(tiny, product).nrValues());
+
+  // Summing out X cancels the values for Y=0.
+  const TableFactor g(X & Y, "1 2 -1 3");
+  EXPECT_LONGS_EQUAL(1, g.sum(1)->nrValues());
+  EXPECT_LONGS_EQUAL(1, g.sum(Ordering{X.first})->nrValues());
+}
+
+/* ************************************************************************* */
+// A computed scalar zero must annihilate factors in either multiplication order.
+TEST(TableFactor, ComputedScalarZero) {
+  const DiscreteKey X(0, 2);
+  const TableFactor prior(X, "0.25 0.75");
+  const TableFactor scalar(DiscreteKeys{}, std::vector<double>{1.0});
+  const auto zero = scalar.apply([](const double&) { return 0.0; });
+
+  for (const TableFactor& result :
+       {zero * prior, prior * zero, prior / zero}) {
+    EXPECT_DOUBLES_EQUAL(0.0, result(DiscreteValues{{X.first, 0}}), 1e-12);
+    EXPECT_DOUBLES_EQUAL(0.0, result(DiscreteValues{{X.first, 1}}), 1e-12);
+  }
+}
+
+/* ************************************************************************* */
+// Removing stored zeros must preserve the maximum of an all-zero factor.
+TEST(TableFactor, MaximumAfterZeroing) {
+  const DiscreteKey X(0, 2);
+  const auto zero = TableFactor(X, "0.25 0.75") * 0.0;
+  EXPECT_DOUBLES_EQUAL(0.0, zero->max(), 1e-12);
+}
+
+/* ************************************************************************* */
+// A default-constructed factor acts as the identity in multiplication.
+TEST(TableFactor, DefaultIsIdentity) {
+  const DiscreteKey X(0, 2);
+  const TableFactor prior(X, "0.25 0.75");
+  EXPECT(assert_equal(prior, TableFactor() * prior));
+  EXPECT(assert_equal(prior, prior * TableFactor()));
+}
+
+/* ************************************************************************* */
+namespace key_order_fixture {
+// Keys deliberately not in increasing order: X comes first but has key 1.
+const DiscreteKey X(1, 2), Y(0, 3);
+const std::vector<double> values{1, 2, 3, 4, 5, 6};
+
+// Evaluating a table whose keys are not sorted agrees with the decision tree.
+TEST(TableFactor, EvaluateUnsortedKeys) {
+  const TableFactor table(X & Y, values);
+  const DecisionTreeFactor tree(X & Y, values);
+  for (auto&& [assignment, value] : tree.enumerate()) {
+    EXPECT_DOUBLES_EQUAL(value, table.evaluate(assignment), 1e-9);
+  }
+}
+
+// Reordering the keys changes the table layout but not the values.
+TEST(TableFactor, Reorder) {
+  const TableFactor table(X & Y, values);
+  const TableFactor reordered = table.reorder(Y & X);
+  EXPECT(assert_equal(TableFactor(Y & X, "1 4 2 5 3 6"), reordered));
+  for (auto&& [assignment, value] : table.enumerate()) {
+    EXPECT_DOUBLES_EQUAL(value, reordered.evaluate(assignment), 1e-9);
+  }
+  CHECK_EXCEPTION(table.reorder(DiscreteKeys{X}), std::invalid_argument);
+}
+
+// Reordering rejects keys that are not a permutation of the factor's keys.
+TEST(TableFactor, ReorderInvalidKeys) {
+  const TableFactor table(X & Y, values);
+  CHECK_EXCEPTION(table.reorder(X & X), std::invalid_argument);
+  CHECK_EXCEPTION(table.reorder(DiscreteKey(Y.first, 2) & X),
+                  std::invalid_argument);
+}
+
+}  // namespace key_order_fixture
+/* ************************************************************************* */
+namespace restrict_fixture {
+const DiscreteKey A(12, 2), B(5, 3), C(91, 2);
+
+// Restricting some keys keeps only the entries consistent with the assignment.
+TEST(TableFactor, Restrict) {
+  const TableFactor f1(A & B, "1 2  3 4  5 6");
+  const auto restricted1 =
+      std::dynamic_pointer_cast<TableFactor>(f1.restrict({{A.first, 1}}));
+  CHECK(restricted1);
+  EXPECT(assert_equal(TableFactor(B, "4 5 6"), *restricted1));
+
+  const TableFactor f2(A & B & C, "1 2  3 4  5 6  7 8  9 10  11 12");
+  const auto restricted2 = std::dynamic_pointer_cast<TableFactor>(
+      f2.restrict({{A.first, 0}, {B.first, 2}}));
+  CHECK(restricted2);
+  EXPECT(assert_equal(TableFactor(C, "5 6"), *restricted2));
+}
+
+// Restricting every key leaves a single value, ignoring keys not in the factor.
+TEST(TableFactor, RestrictAllKeys) {
+  const TableFactor f(A, "50 100");
+  const auto restricted = std::dynamic_pointer_cast<TableFactor>(
+      f.restrict({{A.first, 1}, {B.first, 0}}));
+  CHECK(restricted);
+  EXPECT_LONGS_EQUAL(0, restricted->size());
+  EXPECT_LONGS_EQUAL(1, restricted->nrValues());
+  EXPECT_DOUBLES_EQUAL(100, restricted->evaluate(DiscreteValues()), 1e-9);
+}
+
+// Restricting a sparse table agrees with restricting the decision tree.
+TEST(TableFactor, RestrictMatchesDecisionTree) {
+  const std::vector<double> values{0, 2, 3, 0, 5, 6, 7, 0, 9, 10, 0, 12};
+  const TableFactor table(A & B & C, values);
+  const DecisionTreeFactor tree(A & B & C, values);
+  for (size_t b = 0; b < B.second; b++) {
+    const DiscreteValues assignment{{B.first, b}};
+    EXPECT(assert_equal(tree.restrict(assignment)->toDecisionTreeFactor(),
+                        table.restrict(assignment)->toDecisionTreeFactor()));
+  }
+}
+
+}  // namespace restrict_fixture
+/* ************************************************************************* */
+namespace table_conditional_fixture {
+const DiscreteKey A(0, 2), B(1, 3);
+const std::string spec = "1 2 3 4 5 6";
+// A joint distribution stored as a sparse table, and as a decision tree.
+const DiscreteConditional tableConditional(2, TableFactor(A & B, spec));
+const DiscreteConditional treeConditional(2, DecisionTreeFactor(A & B, spec));
+
+// Equality with a decision-tree conditional holds in both directions.
+TEST(TableConditional, EqualsAcrossRepresentations) {
+  EXPECT(treeConditional.equals(tableConditional));
+  EXPECT(tableConditional.equals(treeConditional));
+}
+
+// Constructing a conditional from a TableFactor keeps the sparse table.
+TEST(TableConditional, Storage) {
+  EXPECT(std::dynamic_pointer_cast<TableFactor>(tableConditional.factor()));
+  EXPECT(assert_equal(treeConditional, tableConditional));
+}
+
+// Marginalizing a table-backed conditional matches the decision tree version.
+TEST(TableConditional, Marginal) {
+  EXPECT(assert_equal(treeConditional.marginal(A.first),
+                      tableConditional.marginal(A.first)));
+}
+
+// The likelihood of a table-backed conditional matches the decision tree
+// version.
+TEST(TableConditional, Likelihood) {
+  const DiscreteValues frontalValues{{A.first, 1}, {B.first, 2}};
+  EXPECT(assert_equal(*treeConditional.likelihood(frontalValues),
+                      *tableConditional.likelihood(frontalValues)));
+}
+
+// Multiplying conditionals works with a table-backed one on either side.
+TEST(TableConditional, ConditionalProduct) {
+  const DiscreteKey C(2, 2);
+  const DiscreteConditional conditional(C, {A}, "1/3 2/2");  // P(C|A)
+  const DiscreteConditional expected = conditional * treeConditional;
+  EXPECT(assert_equal(expected, conditional * tableConditional));
+  EXPECT(assert_equal(expected, tableConditional * conditional));
+}
+
+// Pruning a table-backed conditional keeps the table and renormalizes.
+TEST(TableConditional, Prune) {
+  const auto pruned =
+      std::dynamic_pointer_cast<DiscreteConditional>(tableConditional.prune(2));
+  CHECK(pruned);
+  EXPECT(std::dynamic_pointer_cast<TableFactor>(pruned->factor()));
+  EXPECT(assert_equal(DiscreteConditional(2, TableFactor(A & B, "0 0 0 0 5 6")),
+                      *pruned));
+}
+
+// The argmax of a table is the assignment with the largest value.
+TEST(TableFactor, Argmax) {
+  const DiscreteValues expected{{A.first, 1}, {B.first, 2}};
+  EXPECT(assert_equal(expected, TableFactor(A & B, spec).argmax()));
+}
+
+// Verify that sparse indices for a large integer range remain exact.
+TEST(TableFactor, EvaluateLargeIntegerStride) {
+  DiscreteKeys keys{{0, 2}};
+  DiscreteValues values{{0, 1}};
+  uint64_t stride = 1;
+  for (Key key = 1; key <= 34; ++key) {
+    keys.emplace_back(key, 3);
+    values[key] = 0;
+    stride *= 3;
+  }
+
+  // The logical table is large, but only one nonzero entry is allocated.
+  // stride = 3^34 = 16677181699666569, which fits in a 64-bit index.
+  SparseVector entries(2 * stride);
+  entries.insert(stride) = 7.0;
+  const TableFactor table(keys, entries);
+
+  EXPECT_DOUBLES_EQUAL(7.0, table(values), 1e-12);
+  const TableFactor subset(DiscreteKey(0, 2), "0 2");
+  EXPECT_DOUBLES_EQUAL(14.0, (table * subset)(values), 1e-12);
+  EXPECT_DOUBLES_EQUAL(3.5, (table / subset)(values), 1e-12);
+}
+
+#ifdef GTSAM_ALLOW_DEPRECATED_SINCE_V43
+// A default-constructed TableDistribution still stores a TableFactor.
+TEST(TableDistribution, DefaultConstructor) {
+  const TableDistribution empty;
+  EXPECT(std::dynamic_pointer_cast<TableFactor>(empty.factor()));
+  EXPECT(assert_equal(TableFactor(), empty.table()));
+  EXPECT(assert_equal(empty, TableDistribution()));
+}
+
+// The deprecated TableDistribution matches a table-backed conditional, and
+// equality holds in both directions.
+TEST(TableDistribution, DeprecatedShim) {
+  const TableDistribution distribution(A & B, spec);
+  EXPECT(tableConditional.equals(distribution));
+  EXPECT(distribution.equals(tableConditional));
+  EXPECT(assert_equal(tableConditional.toTableFactor(), distribution.table()));
+  EXPECT(assert_equal(distribution.table().argmax(), distribution.argmax()));
+  EXPECT(std::dynamic_pointer_cast<TableDistribution>(distribution.prune(2)));
+}
+
+// Multiplication must preserve normalization after pruning a table prior.
+TEST(TableDistribution, PrunedConditionalProduct) {
+  const DiscreteKey C(2, 2);
+  const TableDistribution prior(A, "0.4 0.6");
+  // Retain only A=1. Pruning returns a new, renormalized distribution.
+  const auto pruned =
+      std::dynamic_pointer_cast<TableDistribution>(prior.prune(1));
+  CHECK(pruned);
+  const DiscreteConditional conditional(C, {A}, "1/1 1/1");  // P(C|A)
+  const DiscreteConditional& tablePrior = *pruned;
+  const DiscreteConditional joint = conditional * tablePrior;
+
+  EXPECT_DOUBLES_EQUAL(0.0, joint(DiscreteValues{{A.first, 0}, {C.first, 0}}),
+                       1e-12);
+  EXPECT_DOUBLES_EQUAL(0.0, joint(DiscreteValues{{A.first, 0}, {C.first, 1}}),
+                       1e-12);
+  EXPECT_DOUBLES_EQUAL(0.5, joint(DiscreteValues{{A.first, 1}, {C.first, 0}}),
+                       1e-12);
+  EXPECT_DOUBLES_EQUAL(0.5, joint(DiscreteValues{{A.first, 1}, {C.first, 1}}),
+                       1e-12);
+
+  double total = 0.0;
+  for (const auto& values : joint.allAssignments()) total += joint(values);
+  EXPECT_DOUBLES_EQUAL(1.0, total, 1e-12);
+}
+
+// Removing a known mode through the base class must update table storage too.
+TEST(TableDistribution, RemoveDiscreteModesUpdatesTable) {
+  const DiscreteKey C(2, 2);
+  TableDistribution distribution(A & C, "1 2 3 4");
+  DiscreteConditional& conditional = distribution;
+  conditional.removeDiscreteModes(DiscreteValues{{A.first, 1}});
+
+  EXPECT_LONGS_EQUAL(1, conditional.size());
+  EXPECT_LONGS_EQUAL(1, conditional.nrFrontals());
+  EXPECT_LONGS_EQUAL(0, conditional.nrParents());
+  EXPECT_LONGS_EQUAL(C.first, conditional.firstFrontalKey());
+
+  // Keep the A=1 slice of the original normalized joint: [0.3, 0.4].
+  // Mode removal restricts the distribution; it does not renormalize it.
+  EXPECT_DOUBLES_EQUAL(0.3, distribution(DiscreteValues{{C.first, 0}}), 1e-12);
+  EXPECT_DOUBLES_EQUAL(0.4, distribution(DiscreteValues{{C.first, 1}}), 1e-12);
+
+  const DecisionTreeFactor expected(C, "0.3 0.4");
+  const DecisionTreeFactor converted = distribution.toDecisionTreeFactor();
+  EXPECT_LONGS_EQUAL(1, converted.size());
+  EXPECT(assert_equal(expected, converted));
+}
+#endif
+
+}  // namespace table_conditional_fixture
+/* ************************************************************************* */
+int main() {
+  TestResult tr;
+  return TestRegistry::runAllTests(tr);
+}
+/* ************************************************************************* */

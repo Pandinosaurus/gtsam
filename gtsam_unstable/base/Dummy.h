@@ -17,19 +17,32 @@
  * @date June 14, 2012
  */
 
+#pragma once
+
+#include <gtsam/config.h>
+
+#ifdef GTSAM_ALLOW_DEPRECATED_SINCE_V43
+
 #include <gtsam/global_includes.h>
 #include <gtsam_unstable/dllexport.h>
 #include <string>
 
 namespace gtsam {
 
+  /**
+   * Dummy class for testing MATLAB memory allocation.
+   * @deprecated This experimental utility has no maintained replacement.
+   */
   struct GTSAM_UNSTABLE_EXPORT Dummy {
     size_t id;
     Dummy();
     ~Dummy();
+    Dummy(const Dummy& other) = default;
+    Dummy& operator=(const Dummy& other) = default;
     void print(const std::string& s="") const ;
     unsigned char dummyTwoVar(unsigned char a) const ;
   };
 
 } // namespace gtsam
 
+#endif  // GTSAM_ALLOW_DEPRECATED_SINCE_V43

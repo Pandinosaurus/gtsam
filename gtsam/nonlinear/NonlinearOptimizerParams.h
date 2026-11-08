@@ -23,8 +23,11 @@
 
 #include <gtsam/linear/GaussianFactorGraph.h>
 #include <gtsam/linear/SubgraphSolver.h>
-#include <boost/optional.hpp>
+#include <gtsam/linear/MultifrontalParameters.h>
+
+#include <iosfwd>
 #include <string>
+#include <optional>
 
 namespace gtsam {
 
@@ -95,6 +98,7 @@ public:
 
   /** See NonlinearOptimizerParams::linearSolverType */
   enum LinearSolverType {
+    MULTIFRONTAL_SOLVER,
     MULTIFRONTAL_CHOLESKY,
     MULTIFRONTAL_QR,
     SEQUENTIAL_CHOLESKY,
@@ -103,9 +107,14 @@ public:
     CHOLMOD, /* Experimental Flag */
   };
 
-  LinearSolverType linearSolverType = MULTIFRONTAL_CHOLESKY; ///< The type of linear solver to use in the nonlinear optimizer
-  boost::optional<Ordering> ordering; ///< The optional variable elimination ordering, or empty to use COLAMD (default: empty)
+  std::optional<Ordering> ordering; ///< The optional variable elimination ordering, or empty to use COLAMD (default: empty)
   IterativeOptimizationParameters::shared_ptr iterativeParams; ///< The container for iterativeOptimization parameters. used in CG Solvers.
+  /// Parameters for `gtsam::MultifrontalSolver` when using `MULTIFRONTAL_SOLVER`.
+
+  /// The type of linear solver to use in the nonlinear optimizer
+  LinearSolverType linearSolverType = MULTIFRONTAL_CHOLESKY;
+
+  MultifrontalParameters multifrontalParams;
 
   NonlinearOptimizerParams() = default;
   virtual ~NonlinearOptimizerParams() {
@@ -113,19 +122,11 @@ public:
 
   virtual void print(const std::string& str = "") const;
 
-  bool equals(const NonlinearOptimizerParams& other, double tol = 1e-9) const {
-    return maxIterations == other.getMaxIterations()
-        && std::abs(relativeErrorTol - other.getRelativeErrorTol()) <= tol
-        && std::abs(absoluteErrorTol - other.getAbsoluteErrorTol()) <= tol
-        && std::abs(errorTol - other.getErrorTol()) <= tol
-        && verbosityTranslator(verbosity) == other.getVerbosity();
-    //  && orderingType.equals(other.getOrderingType()_;
-    // && linearSolverType == other.getLinearSolverType();
-    // TODO: check ordering, iterativeParams, and iterationsHook
-  }
+  bool equals(const NonlinearOptimizerParams& other, double tol = 1e-9) const;
 
   inline bool isMultifrontal() const {
-    return (linearSolverType == MULTIFRONTAL_CHOLESKY)
+    return (linearSolverType == MULTIFRONTAL_SOLVER)
+        || (linearSolverType == MULTIFRONTAL_CHOLESKY)
         || (linearSolverType == MULTIFRONTAL_QR);
   }
 
@@ -142,8 +143,16 @@ public:
     return (linearSolverType == Iterative);
   }
 
+  /// Return whether this solver needs a variable-elimination ordering.
+  bool requiresOrdering() const {
+    if (!isIterative()) return true;
+    return std::dynamic_pointer_cast<SubgraphSolverParameters>(
+               iterativeParams) != nullptr;
+  }
+
   GaussianFactorGraph::Eliminate getEliminationFunction() const {
     switch (linearSolverType) {
+    case MULTIFRONTAL_SOLVER:
     case MULTIFRONTAL_CHOLESKY:
     case SEQUENTIAL_CHOLESKY:
       return EliminatePreferCholesky;
@@ -162,11 +171,17 @@ public:
     return linearSolverTranslator(linearSolverType);
   }
 
+  /// Return the selected linear solver as a strongly typed value.
+  LinearSolverType getLinearSolver() const { return linearSolverType; }
+
   void setLinearSolverType(const std::string& solver) {
     linearSolverType = linearSolverTranslator(solver);
   }
 
-  void setIterativeParams(const boost::shared_ptr<IterativeOptimizationParameters> params);
+  /// Select the linear solver using the public enum.
+  void setLinearSolver(LinearSolverType solver) { linearSolverType = solver; }
+
+  void setIterativeParams(const std::shared_ptr<IterativeOptimizationParameters> params);
 
   void setOrdering(const Ordering& ordering) {
     this->ordering = ordering;

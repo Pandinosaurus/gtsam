@@ -18,12 +18,11 @@
 
 #pragma once
 
-#include <gtsam/base/VectorSpace.h>
+#include <ceres/autodiff_cost_function.h>
 #include <gtsam/base/OptionalJacobian.h>
-#include <gtsam/3rdparty/ceres/autodiff.h>
+#include <gtsam/base/VectorSpace.h>
 
-#include <boost/static_assert.hpp>
-#include <boost/type_traits/is_base_of.hpp>
+#include <stdexcept>
 
 namespace gtsam {
 
@@ -33,6 +32,8 @@ namespace gtsam {
  *   template<typename T> bool operator()(const T* const, const T* const, T*
  * predicted) const;
  * For now only binary operators are supported.
+ *
+ * This optional adapter requires Ceres Solver and consumers must link Ceres.
  */
 template <typename FUNCTOR, int M, int N1, int N2>
 class AdaptAutoDiff {
@@ -47,10 +48,8 @@ class AdaptAutoDiff {
 
  public:
   VectorT operator()(const Vector1& v1, const Vector2& v2,
-                     OptionalJacobian<M, N1> H1 = boost::none,
-                     OptionalJacobian<M, N2> H2 = boost::none) {
-    using ceres::internal::AutoDiff;
-
+                     OptionalJacobian<M, N1> H1 = {},
+                     OptionalJacobian<M, N2> H2 = {}) {
     bool success;
     VectorT result;
 
@@ -59,8 +58,9 @@ class AdaptAutoDiff {
       const double* parameters[] = {v1.data(), v2.data()};
       double rowMajor1[M * N1] = {}, rowMajor2[M * N2] = {};  // on the stack
       double* jacobians[] = {rowMajor1, rowMajor2};
-      success = AutoDiff<FUNCTOR, double, N1, N2>::Differentiate(
-          f, parameters, M, result.data(), jacobians);
+      ceres::AutoDiffCostFunction<FUNCTOR, M, N1, N2> autoDiff(
+          &f, ceres::DO_NOT_TAKE_OWNERSHIP);
+      success = autoDiff.Evaluate(parameters, result.data(), jacobians);
 
       // Convert from row-major to columnn-major
       // TODO: if this is a bottleneck (probably not!) fix Autodiff to be

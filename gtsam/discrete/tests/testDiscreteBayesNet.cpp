@@ -16,43 +16,39 @@
  *  @author Frank Dellaert
  */
 
+#include <CppUnitLite/TestHarness.h>
+#include <gtsam/base/Testable.h>
+#include <gtsam/base/Vector.h>
+#include <gtsam/base/debug.h>
 #include <gtsam/discrete/DiscreteBayesNet.h>
 #include <gtsam/discrete/DiscreteFactorGraph.h>
 #include <gtsam/discrete/DiscreteMarginals.h>
-#include <gtsam/base/debug.h>
-#include <gtsam/base/Testable.h>
-#include <gtsam/base/Vector.h>
-
-#include <CppUnitLite/TestHarness.h>
-
-
-#include <boost/assign/list_inserter.hpp>
-#include <boost/assign/std/map.hpp>
-
-using namespace boost::assign;
+#include <gtsam/inference/Symbol.h>
 
 #include <iostream>
 #include <string>
 #include <vector>
 
-using namespace std;
+#include "AsiaExample.h"
+
 using namespace gtsam;
 
 /* ************************************************************************* */
 TEST(DiscreteBayesNet, bayesNet) {
+  using ADT = AlgebraicDecisionTree<Key>;
   DiscreteBayesNet bayesNet;
   DiscreteKey Parent(0, 2), Child(1, 2);
 
-  auto prior = boost::make_shared<DiscreteConditional>(Parent % "6/4");
-  CHECK(assert_equal(Potentials::ADT({Parent}, "0.6 0.4"),
-                     (Potentials::ADT)*prior));
+  auto prior = std::make_shared<DiscreteConditional>(Parent % "6/4");
+  CHECK(assert_equal(ADT({Parent}, "0.6 0.4"),
+                     ADT(prior->toDecisionTreeFactor())));
   bayesNet.push_back(prior);
 
   auto conditional =
-      boost::make_shared<DiscreteConditional>(Child | Parent = "7/3 8/2");
+      std::make_shared<DiscreteConditional>(Child | Parent = "7/3 8/2");
   EXPECT_LONGS_EQUAL(1, *(conditional->beginFrontals()));
-  Potentials::ADT expected(Child & Parent, "0.7 0.8 0.3 0.2");
-  CHECK(assert_equal(expected, (Potentials::ADT)*conditional));
+  ADT expected(Child & Parent, "0.7 0.8 0.3 0.2");
+  CHECK(assert_equal(expected, ADT(conditional->toDecisionTreeFactor())));
   bayesNet.push_back(conditional);
 
   DiscreteFactorGraph fg(bayesNet);
@@ -70,25 +66,12 @@ TEST(DiscreteBayesNet, bayesNet) {
 
 /* ************************************************************************* */
 TEST(DiscreteBayesNet, Asia) {
-  DiscreteBayesNet asia;
-  DiscreteKey Asia(0, 2), Smoking(4, 2), Tuberculosis(3, 2), LungCancer(6, 2),
-      Bronchitis(7, 2), Either(5, 2), XRay(2, 2), Dyspnea(1, 2);
-
-  asia.add(Asia % "99/1");
-  asia.add(Smoking % "50/50");
-
-  asia.add(Tuberculosis | Asia = "99/1 95/5");
-  asia.add(LungCancer | Smoking = "99/1 90/10");
-  asia.add(Bronchitis | Smoking = "70/30 40/60");
-
-  asia.add((Either | Tuberculosis, LungCancer) = "F T T T");
-
-  asia.add(XRay | Either = "95/5 2/98");
-  asia.add((Dyspnea | Either, Bronchitis) = "9/1 2/8 3/7 1/9");
+  using namespace asia_example;
+  const DiscreteBayesNet asia = createAsiaExample();
 
   // Convert to factor graph
   DiscreteFactorGraph fg(asia);
-  LONGS_EQUAL(3, fg.back()->size());
+  LONGS_EQUAL(1, fg.back()->size());
 
   // Check the marginals we know (of the parent-less nodes)
   DiscreteMarginals marginals(fg);
@@ -97,19 +80,15 @@ TEST(DiscreteBayesNet, Asia) {
   EXPECT(assert_equal(vs, marginals.marginalProbabilities(Smoking)));
 
   // Create solver and eliminate
-  Ordering ordering;
-  ordering += Key(0), Key(1), Key(2), Key(3), Key(4), Key(5), Key(6), Key(7);
+  const Ordering ordering{A, D, T, X, S, E, L, B};
   DiscreteBayesNet::shared_ptr chordal = fg.eliminateSequential(ordering);
   DiscreteConditional expected2(Bronchitis % "11/9");
   EXPECT(assert_equal(expected2, *chordal->back()));
 
-  // solve
-  auto actualMPE = chordal->optimize();
-  DiscreteFactor::Values expectedMPE;
-  insert(expectedMPE)(Asia.first, 0)(Dyspnea.first, 0)(XRay.first, 0)(
-      Tuberculosis.first, 0)(Smoking.first, 0)(Either.first, 0)(
-      LungCancer.first, 0)(Bronchitis.first, 0);
-  EXPECT(assert_equal(expectedMPE, actualMPE));
+  // Check evaluate and logProbability
+  auto result = fg.optimize();
+  EXPECT_DOUBLES_EQUAL(asia.logProbability(result),
+                       std::log(asia.evaluate(result)), 1e-9);
 
   // add evidence, we were in Asia and we have dyspnea
   fg.add(Asia, "0 1");
@@ -117,25 +96,20 @@ TEST(DiscreteBayesNet, Asia) {
 
   // solve again, now with evidence
   DiscreteBayesNet::shared_ptr chordal2 = fg.eliminateSequential(ordering);
-  auto actualMPE2 = chordal2->optimize();
-  DiscreteFactor::Values expectedMPE2;
-  insert(expectedMPE2)(Asia.first, 1)(Dyspnea.first, 1)(XRay.first, 0)(
-      Tuberculosis.first, 0)(Smoking.first, 1)(Either.first, 0)(
-      LungCancer.first, 0)(Bronchitis.first, 1);
-  EXPECT(assert_equal(expectedMPE2, actualMPE2));
+  EXPECT(assert_equal(expected2, *chordal->back()));
 
   // now sample from it
-  DiscreteFactor::Values expectedSample;
+  DiscreteValues expectedSample{{Asia.first, 1},       {Dyspnea.first, 1},
+                                {XRay.first, 0},       {Tuberculosis.first, 0},
+                                {Smoking.first, 1},    {Either.first, 0},
+                                {LungCancer.first, 0}, {Bronchitis.first, 1}};
   SETDEBUG("DiscreteConditional::sample", false);
-  insert(expectedSample)(Asia.first, 1)(Dyspnea.first, 1)(XRay.first, 1)(
-      Tuberculosis.first, 0)(Smoking.first, 1)(Either.first, 1)(
-      LungCancer.first, 1)(Bronchitis.first, 0);
   auto actualSample = chordal2->sample();
   EXPECT(assert_equal(expectedSample, actualSample));
 }
 
 /* ************************************************************************* */
-TEST_UNSAFE(DiscreteBayesNet, Sugar) {
+TEST(DiscreteBayesNet, Sugar) {
   DiscreteKey T(0, 2), L(1, 2), E(2, 2), C(8, 3), S(7, 2);
 
   DiscreteBayesNet bn;
@@ -147,6 +121,85 @@ TEST_UNSAFE(DiscreteBayesNet, Sugar) {
   // try multivalued
   bn.add(C % "1/1/2");
   bn.add(C | S = "1/1/2 5/2/3");
+}
+
+/* ************************************************************************* */
+// Test that pruning a DiscreteBayesNet results in a conditional whose leaves sum to 1.
+TEST(DiscreteBayesNet, PruneSumToOne) {
+  using namespace asia_example;
+  const DiscreteBayesNet asiaBn = createAsiaExample();
+
+  // Test with various numbers of max leaves.
+  // Asia network has 8 binary variables, so 2^8 = 256 possible assignments in the full joint.
+  std::vector<size_t> maxLeavesToTest = { 1, 2, 5, 10, 50, 100, 256, 500 };
+
+  for (size_t maxLeaves : maxLeavesToTest) {
+    // We expect maxLeaves >= 1 for the sum-to-one property to hold meaningfully.
+
+    DiscreteBayesNet prunedBn = asiaBn.prune(maxLeaves);
+
+    // If the original BN was not empty and maxLeaves >= 1,
+    // the prunedBN should contain one conditional (the pruned joint).
+    EXPECT(prunedBn.size() > 0);
+    if (prunedBn.size() > 0) {
+      EXPECT_LONGS_EQUAL(1, prunedBn.size());
+
+      DiscreteConditional::shared_ptr prunedConditional = prunedBn.front();
+      CHECK(prunedConditional); // Ensure it's not null
+
+      double sumOfProbs = prunedConditional->toDecisionTreeFactor().sum();
+      EXPECT_DOUBLES_EQUAL(1.0, sumOfProbs, 1e-8);
+    }
+  }
+}
+
+/* ************************************************************************* */
+TEST(DiscreteBayesNet, Dot) {
+  using namespace asia_example;
+  const DiscreteBayesNet fragment = createFragment();
+
+  std::string expected =
+      "digraph {\n"
+      "  size=\"5,5\";\n"
+      "\n"
+      "  var4683743612465315848[label=\"A8\"];\n"
+      "  var4971973988617027587[label=\"E3\"];\n"
+      "  var5476377146882523141[label=\"L5\"];\n"
+      "  var5980780305148018695[label=\"S7\"];\n"
+      "  var6052837899185946630[label=\"T6\"];\n"
+      "\n"
+      "  var4683743612465315848->var6052837899185946630\n"
+      "  var5980780305148018695->var5476377146882523141\n"
+      "  var6052837899185946630->var4971973988617027587\n"
+      "  var5476377146882523141->var4971973988617027587\n"
+      "}";
+  std::string actual = fragment.dot();
+  EXPECT(actual.compare(expected) == 0);
+}
+
+/* ************************************************************************* */
+// Check markdown representation looks as expected.
+TEST(DiscreteBayesNet, markdown) {
+  using namespace asia_example;
+  DiscreteBayesNet priors = createPriors();
+
+  std::string expected =
+      "`DiscreteBayesNet` of size 2\n"
+      "\n"
+      " *P(Smoking):*\n\n"
+      "|Smoking|value|\n"
+      "|:-:|:-:|\n"
+      "|0|0.5|\n"
+      "|1|0.5|\n"
+      "\n"
+      " *P(Asia):*\n\n"
+      "|Asia|value|\n"
+      "|:-:|:-:|\n"
+      "|0|0.99|\n"
+      "|1|0.01|\n\n";
+  auto formatter = [](Key key) { return key == A ? "Asia" : "Smoking"; };
+  std::string actual = priors.markdown(formatter);
+  EXPECT(actual == expected);
 }
 
 /* ************************************************************************* */

@@ -1,3 +1,14 @@
+/* ----------------------------------------------------------------------------
+
+ * GTSAM Copyright 2010, Georgia Tech Research Corporation,
+ * Atlanta, Georgia 30332-0415
+ * All Rights Reserved
+ * Authors: Frank Dellaert, et al. (see THANKS for the full author list)
+
+ * See LICENSE for the license information
+
+ * -------------------------------------------------------------------------- */
+
 /*
  * LocalOrientedPlane3Factor.cpp
  *
@@ -15,17 +26,17 @@ namespace gtsam {
 void LocalOrientedPlane3Factor::print(const string& s,
     const KeyFormatter& keyFormatter) const {
   cout << s << (s == "" ? "" : "\n");
-  cout << "LocalOrientedPlane3Factor Factor (" << keyFormatter(key1()) << ", "
-       << keyFormatter(key2()) << ", " << keyFormatter(key3()) << ")\n";
+  cout << "LocalOrientedPlane3Factor Factor (" << keyFormatter(key<1>()) << ", "
+       << keyFormatter(key<2>()) << ", " << keyFormatter(key<3>()) << ")\n";
   measured_p_.print("Measured Plane");
   this->noiseModel_->print("  noise model: ");
 }
 
 //***************************************************************************
-Vector LocalOrientedPlane3Factor::evaluateError(const Pose3& wTwi,
-    const Pose3& wTwa, const OrientedPlane3& a_plane,
-    boost::optional<Matrix&> H1, boost::optional<Matrix&> H2,
-    boost::optional<Matrix&> H3) const {
+Vector3 LocalOrientedPlane3Factor::evaluateError(
+    const Pose3& wTwi, const Pose3& wTwa, const OrientedPlane3& a_plane,
+    OptionalMatrixType H1, OptionalMatrixType H2,
+    OptionalMatrixType H3) const {
 
   Matrix66 aTai_H_wTwa, aTai_H_wTwi;
   Matrix36 predicted_H_aTai;
@@ -43,7 +54,7 @@ Vector LocalOrientedPlane3Factor::evaluateError(const Pose3& wTwi,
 
   // Calculate the error between measured and estimated planes in sensor frame.
   const Vector3 err = measured_p_.errorVector(i_plane,
-    boost::none, (H1 || H2 || H3) ? &error_H_predicted : nullptr);
+    {}, (H1 || H2 || H3) ? &error_H_predicted : nullptr);
 
   // Apply the chain rule to calculate the derivatives.
   if (H1) {

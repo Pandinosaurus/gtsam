@@ -43,7 +43,20 @@ bool ConcurrentIncrementalFilter::equals(const ConcurrentFilter& rhs, double tol
 
 /* ************************************************************************* */
 ConcurrentIncrementalFilter::Result ConcurrentIncrementalFilter::update(const NonlinearFactorGraph& newFactors, const Values& newTheta,
-    const boost::optional<FastList<Key> >& keysToMove, const boost::optional< FactorIndices >& removeFactorIndices) {
+    const std::optional<FastList<Key> >& keysToMove, const std::optional< FactorIndices >& removeFactorIndices) {
+
+  ISAM2UpdateParams updateParams;
+  if(removeFactorIndices) {
+    updateParams.removeFactorIndices = *removeFactorIndices;
+  }
+  return update(newFactors, newTheta, updateParams, keysToMove);
+}
+
+/* ************************************************************************* */
+ConcurrentIncrementalFilter::Result ConcurrentIncrementalFilter::update(
+    const NonlinearFactorGraph& newFactors, const Values& newTheta,
+    const ISAM2UpdateParams& updateParams,
+    const std::optional<FastList<Key> >& keysToMove) {
 
   gttic(update);
 
@@ -55,43 +68,43 @@ ConcurrentIncrementalFilter::Result ConcurrentIncrementalFilter::update(const No
   // Create the return result meta-data
   Result result;
 
-  // We do not need to remove any factors at this time
-  FactorIndices removedFactors;
-
-  if(removeFactorIndices){
-    removedFactors.insert(removedFactors.end(), removeFactorIndices->begin(), removeFactorIndices->end());
-  }
+  // Copy the caller's parameters so filter-specific update controls can be merged in.
+  ISAM2UpdateParams mergedUpdateParams = updateParams;
 
   // Generate ordering constraints that force the 'keys to move' to the end
-  boost::optional<FastMap<Key,int> > orderingConstraints = boost::none;
+  std::optional<FastMap<Key,int> > orderingConstraints = {};
   if(keysToMove && keysToMove->size() > 0) {
     orderingConstraints = FastMap<Key,int>();
     int group = 1;
     // Set all existing variables to Group1
     if(isam2_.getLinearizationPoint().size() > 0) {
-      for(const auto key_value: isam2_.getLinearizationPoint()) {
-        orderingConstraints->operator[](key_value.key) = group;
+      for(const auto key: isam2_.getLinearizationPoint().keys()) {
+        orderingConstraints->operator[](key) = group;
       }
       ++group;
     }
     // Assign new variables to the root
-    for(const auto key_value: newTheta) {
-      orderingConstraints->operator[](key_value.key) = group;
+    for(const auto key: newTheta.keys()) {
+      orderingConstraints->operator[](key) = group;
     }
     // Set marginalizable variables to Group0
     for(Key key: *keysToMove){
       orderingConstraints->operator[](key) = 0;
     }
+
+    if(!mergedUpdateParams.constrainedKeys) {
+      mergedUpdateParams.constrainedKeys = orderingConstraints;
+    } else {
+      for(const auto& keyAndGroup: *orderingConstraints) {
+        mergedUpdateParams.constrainedKeys->operator[](keyAndGroup.first) = keyAndGroup.second;
+      }
+    }
   }
 
-  // Create the set of linear keys that iSAM2 should hold constant
-  // iSAM2 takes care of this for us; no need to specify additional noRelin keys
-  boost::optional<FastList<Key> > noRelinKeys = boost::none;
-
   // Mark additional keys between the 'keys to move' and the leaves
-  boost::optional<FastList<Key> > additionalKeys = boost::none;
+  std::optional<FastList<Key> > additionalKeys = {};
   if(keysToMove && keysToMove->size() > 0) {
-    std::set<Key> markedKeys;
+    KeySet markedKeys;
     for(Key key: *keysToMove) {
       if(isam2_.getLinearizationPoint().exists(key)) {
         ISAM2Clique::shared_ptr clique = isam2_[key];
@@ -106,11 +119,18 @@ ConcurrentIncrementalFilter::Result ConcurrentIncrementalFilter::update(const No
       }
     }
     additionalKeys = FastList<Key>(markedKeys.begin(), markedKeys.end());
+
+    if(!mergedUpdateParams.extraReelimKeys) {
+      mergedUpdateParams.extraReelimKeys = additionalKeys;
+    } else {
+      mergedUpdateParams.extraReelimKeys->insert(
+          mergedUpdateParams.extraReelimKeys->end(), additionalKeys->begin(), additionalKeys->end());
+    }
   }
 
   // Update the system using iSAM2
   gttic(isam2);
-  ISAM2Result isam2Result = isam2_.update(newFactors, newTheta, removedFactors, orderingConstraints, noRelinKeys, additionalKeys);
+  ISAM2Result isam2Result = isam2_.update(newFactors, newTheta, mergedUpdateParams);
   gttoc(isam2);
 
   if(keysToMove && keysToMove->size() > 0) {
@@ -201,8 +221,8 @@ void ConcurrentIncrementalFilter::synchronize(const NonlinearFactorGraph& smooth
 
   // Force iSAM2 not to relinearize anything during this iteration
   FastList<Key> noRelinKeys;
-  for(const auto key_value: isam2_.getLinearizationPoint()) {
-    noRelinKeys.push_back(key_value.key);
+  for(const auto key: isam2_.getLinearizationPoint().keys()) {
+    noRelinKeys.push_back(key);
   }
 
   // Calculate the summarized factor on just the new separator keys
@@ -211,7 +231,7 @@ void ConcurrentIncrementalFilter::synchronize(const NonlinearFactorGraph& smooth
 
   // Remove the old factors on the separator and insert the new ones
   FactorIndices removeFactors(currentSmootherSummarizationSlots_.begin(), currentSmootherSummarizationSlots_.end());
-  ISAM2Result result = isam2_.update(currentSmootherSummarization, Values(), removeFactors, boost::none, noRelinKeys, boost::none, false);
+  ISAM2Result result = isam2_.update(currentSmootherSummarization, Values(), removeFactors, {}, noRelinKeys, {}, false);
   currentSmootherSummarizationSlots_ = result.newFactorsIndices;
 
   // Set the previous smoother summarization to the current smoother summarization and clear the smoother shortcut
@@ -265,7 +285,7 @@ void ConcurrentIncrementalFilter::postsync() {
 
 
 /* ************************************************************************* */
-void ConcurrentIncrementalFilter::RecursiveMarkAffectedKeys(const Key& key, const ISAM2Clique::shared_ptr& clique, std::set<Key>& additionalKeys) {
+void ConcurrentIncrementalFilter::RecursiveMarkAffectedKeys(const Key& key, const ISAM2Clique::shared_ptr& clique, KeySet& additionalKeys) {
 
   // Check if the separator keys of the current clique contain the specified key
   if(std::find(clique->conditional()->beginParents(), clique->conditional()->endParents(), key) != clique->conditional()->endParents()) {
@@ -367,7 +387,7 @@ NonlinearFactorGraph ConcurrentIncrementalFilter::calculateFilterSummarization()
     for(size_t slot: isam2_.getVariableIndex()[key]) {
       const NonlinearFactor::shared_ptr& factor = isam2_.getFactorsUnsafe().at(slot);
       if(factor) {
-        std::set<Key> factorKeys(factor->begin(), factor->end());
+        KeySet factorKeys(factor->begin(), factor->end());
         if(std::includes(cliqueKeys.begin(), cliqueKeys.end(), factorKeys.begin(), factorKeys.end())) {
           cliqueFactorSlots.insert(slot);
         }

@@ -10,23 +10,25 @@ namespace gtsam {
 #include <gtsam/basis/Fourier.h>
 
 class FourierBasis {
-  static Vector CalculateWeights(size_t N, double x);
-  static Matrix WeightMatrix(size_t N, Vector x);
+  static gtsam::Weights CalculateWeights(size_t N, double x);
+  static gtsam::Matrix WeightMatrix(size_t N, const gtsam::Vector& x);
 
-  static Matrix DifferentiationMatrix(size_t N);
-  static Vector DerivativeWeights(size_t N, double x);
+  static gtsam::Matrix DifferentiationMatrix(size_t N);
+  static gtsam::Weights DerivativeWeights(size_t N, double x);
 };
 
 #include <gtsam/basis/Chebyshev.h>
 
 class Chebyshev1Basis {
-  static Matrix CalculateWeights(size_t N, double x);
-  static Matrix WeightMatrix(size_t N, Vector X);
+  static gtsam::Weights CalculateWeights(size_t N, double x, double a = -1,
+                                         double b = 1);
+  static gtsam::Matrix WeightMatrix(size_t N, const gtsam::Vector& X);
 };
 
 class Chebyshev2Basis {
-  static Matrix CalculateWeights(size_t N, double x);
-  static Matrix WeightMatrix(size_t N, Vector x);
+  static gtsam::Weights CalculateWeights(size_t N, double x, double a = -1,
+                                         double b = 1);
+  static gtsam::Matrix WeightMatrix(size_t N, const gtsam::Vector& x);
 };
 
 #include <gtsam/basis/Chebyshev2.h>
@@ -34,31 +36,61 @@ class Chebyshev2 {
   static double Point(size_t N, int j);
   static double Point(size_t N, int j, double a, double b);
 
-  static Vector Points(size_t N);
-  static Vector Points(size_t N, double a, double b);
+  static gtsam::Vector Points(size_t N);
+  static gtsam::Vector Points(size_t N, double a, double b);
 
-  static Matrix WeightMatrix(size_t N, Vector X);
-  static Matrix WeightMatrix(size_t N, Vector X, double a, double b);
+  static gtsam::Matrix WeightMatrix(size_t N, const gtsam::Vector& X);
+  static gtsam::Matrix WeightMatrix(size_t N, const gtsam::Vector& X, double a,
+                                    double b);
 
-  static Matrix CalculateWeights(size_t N, double x, double a, double b);
-  static Matrix DerivativeWeights(size_t N, double x, double a, double b);
-  static Matrix IntegrationWeights(size_t N, double a, double b);
-  static Matrix DifferentiationMatrix(size_t N, double a, double b);
+  static gtsam::Weights CalculateWeights(size_t N, double x, double a = -1,
+                                         double b = 1);
+  static gtsam::Weights DerivativeWeights(size_t N, double x, double a = -1,
+                                          double b = 1);
+  
+  // Returns the exact (N+1) x N antiderivative matrix.
+  static gtsam::Matrix IntegrationMatrix(size_t N);
+  static gtsam::Matrix DifferentiationMatrix(size_t N);
+  static gtsam::Weights IntegrationWeights(size_t N);
+  static gtsam::Weights DoubleIntegrationWeights(size_t N);
 
-  // TODO Needs OptionalJacobian
-  // static double Derivative(double x, Vector f);
+  static gtsam::Weights CalculateWeights(size_t N, double x, double a,
+                                         double b);
+  static gtsam::Weights DerivativeWeights(size_t N, double x, double a,
+                                          double b);
+  // Returns the exact (N+1) x N antiderivative matrix on [a,b].
+  static gtsam::Matrix IntegrationMatrix(size_t N, double a, double b);
+  static gtsam::Matrix DifferentiationMatrix(size_t N, double a, double b);
+  static gtsam::Weights IntegrationWeights(size_t N, double a, double b);
+  static gtsam::Weights DoubleIntegrationWeights(size_t N, double a,
+                                                 double b);
 };
 
-#include <gtsam/basis/ParameterMatrix.h>
+#include <gtsam/basis/CumulativeSplineTrajectory.h>
+#include <gtsam/basis/CardinalSplineBasis.h>
 
-template <M = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}>
-class ParameterMatrix {
-  ParameterMatrix(const size_t N);
-  ParameterMatrix(const Matrix& matrix);
+class CardinalSplineBasis {
+  static gtsam::Weights CalculateWeights(size_t N, double x);
+  static gtsam::Weights CalculateWeights(size_t N, double x, double a, double b);
+  static gtsam::Weights DerivativeWeights(size_t N, double x);
+  static gtsam::Weights DerivativeWeights(size_t N, double x, double a,
+                                         double b);
+};
 
-  Matrix matrix() const;
+template <T = {gtsam::Rot2, gtsam::Rot3, gtsam::Pose2, gtsam::Pose3}>
+class CumulativeSplineTrajectory {
+  CumulativeSplineTrajectory(double density = 1.0);
+  CumulativeSplineTrajectory(double density, bool padFront);
 
-  void print(const string& s = "") const;
+  double density() const;
+  bool padFront() const;
+  void addControlPoint(const T& point);
+
+  T sampleTrajectory(double timestamp, double windowStart = 0.0,
+                     double windowEnd = -1.0) const;
+  gtsam::This::TangentVector sampleTrajectoryDerivative(
+      double timestamp, double windowStart = 0.0, double windowEnd = -1.0,
+      size_t derivative = 1) const;
 };
 
 #include <gtsam/basis/BasisFactors.h>
@@ -75,45 +107,36 @@ virtual class EvaluationFactor : gtsam::NoiseModelFactor {
                    double x, double a, double b);
 };
 
-template <BASIS, M>
+template <BASIS = {gtsam::FourierBasis, gtsam::Chebyshev1Basis,
+                   gtsam::Chebyshev2Basis, gtsam::Chebyshev2}>
 virtual class VectorEvaluationFactor : gtsam::NoiseModelFactor {
   VectorEvaluationFactor();
-  VectorEvaluationFactor(gtsam::Key key, const Vector& z,
-                         const gtsam::noiseModel::Base* model, const size_t N,
-                         double x);
-  VectorEvaluationFactor(gtsam::Key key, const Vector& z,
-                         const gtsam::noiseModel::Base* model, const size_t N,
-                         double x, double a, double b);
+  VectorEvaluationFactor(gtsam::Key key, const gtsam::Vector& z,
+                         const gtsam::noiseModel::Base* model, const size_t M,
+                         const size_t N, double x);
+  VectorEvaluationFactor(gtsam::Key key, const gtsam::Vector& z,
+                         const gtsam::noiseModel::Base* model, const size_t M,
+                         const size_t N, double x, double a, double b);
 };
 
-// TODO(Varun) Better way to support arbitrary dimensions?
-// Especially if users mainly do `pip install gtsam` for the Python wrapper.
-typedef gtsam::VectorEvaluationFactor<gtsam::Chebyshev2, 3>
-    VectorEvaluationFactorChebyshev2D3;
-typedef gtsam::VectorEvaluationFactor<gtsam::Chebyshev2, 4>
-    VectorEvaluationFactorChebyshev2D4;
-typedef gtsam::VectorEvaluationFactor<gtsam::Chebyshev2, 12>
-    VectorEvaluationFactorChebyshev2D12;
-
-template <BASIS, P>
+template <BASIS = {gtsam::FourierBasis, gtsam::Chebyshev1Basis,
+                   gtsam::Chebyshev2Basis, gtsam::Chebyshev2}>
 virtual class VectorComponentFactor : gtsam::NoiseModelFactor {
   VectorComponentFactor();
   VectorComponentFactor(gtsam::Key key, const double z,
-                        const gtsam::noiseModel::Base* model, const size_t N,
-                        size_t i, double x);
+                        const gtsam::noiseModel::Base* model, const size_t M,
+                        const size_t N, size_t i, double x);
   VectorComponentFactor(gtsam::Key key, const double z,
-                        const gtsam::noiseModel::Base* model, const size_t N,
-                        size_t i, double x, double a, double b);
+                        const gtsam::noiseModel::Base* model, const size_t M,
+                        const size_t N, size_t i, double x, double a, double b);
 };
 
-typedef gtsam::VectorComponentFactor<gtsam::Chebyshev2, 3>
-    VectorComponentFactorChebyshev2D3;
-typedef gtsam::VectorComponentFactor<gtsam::Chebyshev2, 4>
-    VectorComponentFactorChebyshev2D4;
-typedef gtsam::VectorComponentFactor<gtsam::Chebyshev2, 12>
-    VectorComponentFactorChebyshev2D12;
+#include <gtsam/geometry/Pose2.h>
+#include <gtsam/geometry/Pose3.h>
 
-template <BASIS, T>
+template <BASIS = {gtsam::FourierBasis, gtsam::Chebyshev1Basis,
+                   gtsam::Chebyshev2Basis, gtsam::Chebyshev2},
+          T = {gtsam::Rot2, gtsam::Rot3, gtsam::Pose2, gtsam::Pose3}>
 virtual class ManifoldEvaluationFactor : gtsam::NoiseModelFactor {
   ManifoldEvaluationFactor();
   ManifoldEvaluationFactor(gtsam::Key key, const T& z,
@@ -124,8 +147,42 @@ virtual class ManifoldEvaluationFactor : gtsam::NoiseModelFactor {
                            double x, double a, double b);
 };
 
-// TODO(gerry): Add `DerivativeFactor`, `VectorDerivativeFactor`, and
-// `ComponentDerivativeFactor`
+template <BASIS = {gtsam::FourierBasis, gtsam::Chebyshev1Basis,
+                   gtsam::Chebyshev2Basis, gtsam::Chebyshev2}>
+virtual class DerivativeFactor : gtsam::NoiseModelFactor {
+  DerivativeFactor();
+  DerivativeFactor(gtsam::Key key, const double z,
+                   const gtsam::noiseModel::Base* model, const size_t N,
+                   double x);
+  DerivativeFactor(gtsam::Key key, const double z,
+                   const gtsam::noiseModel::Base* model, const size_t N,
+                   double x, double a, double b);
+};
+
+template <BASIS = {gtsam::FourierBasis, gtsam::Chebyshev1Basis,
+                   gtsam::Chebyshev2Basis, gtsam::Chebyshev2}>
+virtual class VectorDerivativeFactor : gtsam::NoiseModelFactor {
+  VectorDerivativeFactor();
+  VectorDerivativeFactor(gtsam::Key key, const gtsam::Vector& z,
+                         const gtsam::noiseModel::Base* model, const size_t M,
+                         const size_t N, double x);
+  VectorDerivativeFactor(gtsam::Key key, const gtsam::Vector& z,
+                         const gtsam::noiseModel::Base* model, const size_t M,
+                         const size_t N, double x, double a, double b);
+};
+
+template <BASIS = {gtsam::FourierBasis, gtsam::Chebyshev1Basis,
+                   gtsam::Chebyshev2Basis, gtsam::Chebyshev2}>
+virtual class ComponentDerivativeFactor : gtsam::NoiseModelFactor {
+  ComponentDerivativeFactor();
+  ComponentDerivativeFactor(gtsam::Key key, const double z,
+                            const gtsam::noiseModel::Base* model,
+                            const size_t P, const size_t N, size_t i, double x);
+  ComponentDerivativeFactor(gtsam::Key key, const double z,
+                            const gtsam::noiseModel::Base* model,
+                            const size_t P, const size_t N, size_t i, double x,
+                            double a, double b);
+};
 
 #include <gtsam/basis/FitBasis.h>
 template <BASIS = {gtsam::FourierBasis, gtsam::Chebyshev1Basis,
@@ -136,11 +193,11 @@ class FitBasis {
 
   static gtsam::NonlinearFactorGraph NonlinearGraph(
       const std::map<double, double>& sequence,
-      const gtsam::noiseModel::Base* model, size_t N);
+      const std::shared_ptr<gtsam::noiseModel::Base>& model, size_t N);
   static gtsam::GaussianFactorGraph::shared_ptr LinearGraph(
       const std::map<double, double>& sequence,
-      const gtsam::noiseModel::Base* model, size_t N);
-  This::Parameters parameters() const;
+      const std::shared_ptr<gtsam::noiseModel::Base>& model, size_t N);
+  gtsam::This::Parameters parameters() const;
 };
 
 }  // namespace gtsam

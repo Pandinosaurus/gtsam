@@ -1,0 +1,177 @@
+/* ----------------------------------------------------------------------------
+
+ * GTSAM Copyright 2010, Georgia Tech Research Corporation,
+ * Atlanta, Georgia 30332-0415
+ * All Rights Reserved
+ * Authors: Frank Dellaert, et al. (see THANKS for the full author list)
+
+ * See LICENSE for the license information
+
+ * -------------------------------------------------------------------------- */
+
+/**
+ * @file    FixedLagSmoother.h
+ * @brief   Base class for a fixed-lag smoother. This mimics the basic interface to iSAM2.
+ *
+ * @author  Stephen Williams
+ * @date    Feb 27, 2013
+ */
+
+// \callgraph
+#pragma once
+
+#include <gtsam/dllexport.h>
+#include <gtsam/inference/Key.h>
+#include <gtsam/nonlinear/NonlinearFactorGraph.h>
+#include <gtsam/nonlinear/Values.h>
+
+#include <map>
+#include <vector>
+
+namespace gtsam {
+
+class GTSAM_EXPORT FixedLagSmoother {
+
+public:
+
+  /// Typedef for a shared pointer to an Incremental Fixed-Lag Smoother
+  typedef std::shared_ptr<FixedLagSmoother> shared_ptr;
+
+  /// Typedef for a Key-Timestamp map/database
+  typedef std::map<Key, double> KeyTimestampMap;
+  typedef std::multimap<double, Key> TimestampKeyMap;
+
+  /**
+   * Meta information returned about the update
+   */
+  // TODO: Think of some more things to put here
+  struct Result {
+    size_t iterations; ///< The number of optimizer iterations performed
+    size_t intermediateSteps; ///< The number of intermediate steps performed within the optimization. For L-M, this is the number of lambdas tried.
+    size_t nonlinearVariables; ///< The number of variables that can be relinearized
+    size_t linearVariables; ///< The number of variables that must keep a constant linearization point
+    double error; ///< The final factor graph error
+    FactorIndices marginalFactorIndices; ///< Indices added during the marginalizeLeaves step
+    FactorIndices deletedFactorIndices; ///< Indices removed during the marginalizeLeaves step
+    KeySet keysOfDeletedNodes; ///< Keys of nodes removed during the marginalizeLeaves step
+    KeySet expiredPendingKeys;  ///< Keys of values that left the lag window
+                                ///< before any factor referenced them, and were
+                                ///< removed without marginalization
+    Result() : iterations(0), intermediateSteps(0), nonlinearVariables(0), linearVariables(0), error(0) {}
+
+    /// Getter methods
+    size_t getIterations() const { return iterations; }
+    size_t getIntermediateSteps() const { return intermediateSteps; }
+    size_t getNonlinearVariables() const { return nonlinearVariables; }
+    size_t getLinearVariables() const { return linearVariables; }
+    double getError() const { return error; }
+    FactorIndices getMarginalFactorIndices() const { return marginalFactorIndices; }
+    FactorIndices getDeletedFactorIndices() const { return deletedFactorIndices; }
+    KeySet getKeysOfDeletedNodes() const { return keysOfDeletedNodes; }
+    KeySet getExpiredPendingKeys() const { return expiredPendingKeys; }
+    GTSAM_EXPORT void print() const;
+  };
+
+  /** default constructor */
+  FixedLagSmoother(double smootherLag = 0.0) : smootherLag_(smootherLag) { }
+
+  /** destructor */
+  virtual ~FixedLagSmoother() { }
+
+  /** Print the factor for debugging and testing (implementing Testable) */
+  virtual void print(
+      const std::string& s = "FixedLagSmoother:\n",
+      const KeyFormatter& keyFormatter = DefaultKeyFormatter) const;
+
+  /** Check if two IncrementalFixedLagSmoother Objects are equal */
+  virtual bool equals(const FixedLagSmoother& rhs, double tol = 1e-9) const;
+
+  /** read the current smoother lag */
+  double smootherLag() const {
+    return smootherLag_;
+  }
+
+  /** write to the current smoother lag */
+  double& smootherLag() {
+    return smootherLag_;
+  }
+
+  /** Write to the current smoother lag. Made for python bindings. */
+  void setSmootherLag(double smootherLag) {
+    smootherLag_ = smootherLag;
+  }
+
+  /** Access the current set of timestamps associated with each variable */
+  const KeyTimestampMap& timestamps() const {
+    return keyTimestampMap_;
+  }
+
+  /// Keys exempt from lag-based marginalization until they are released.
+  const KeySet& retainedKeys() const {
+    return retainedKeys_;
+  }
+
+  /** Add new factors, updating the solution and relinearizing as needed. */
+  virtual Result update(const NonlinearFactorGraph& newFactors = NonlinearFactorGraph(),
+                        const Values& newTheta = Values(),
+                        const KeyTimestampMap& timestamps = KeyTimestampMap(),
+                        const FactorIndices& factorsToRemove = FactorIndices()) = 0;
+
+  /** Compute an estimate from the incomplete linear delta computed during the last update.
+   * This delta is incomplete because it was not updated below wildfire_threshold.  If only
+   * a single variable is needed, it is faster to call calculateEstimate(const KEY&).
+   */
+  virtual Values calculateEstimate() const  = 0;
+
+  /** Compute estimates for a set of variables only, as a Values holding those
+   * keys, whatever their types. The default retracts the whole window and
+   * extracts; subclasses override it with a per-key path.
+   * @param keys The keys to estimate; must be unique.
+   * @throws ValuesKeyDoesNotExist if a key is not in the smoother.
+   */
+  virtual Values calculateEstimate(const KeyVector& keys) const {
+    return calculateEstimate().extract(keys);
+  }
+
+
+protected:
+
+  /** The length of the smoother lag. Any variable older than this amount will be marginalized out. */
+  double smootherLag_;
+
+  /** The current timestamp associated with each tracked key */
+  TimestampKeyMap timestampKeyMap_;
+  KeyTimestampMap keyTimestampMap_;
+
+  /** Keys exempt from lag-based marginalization, excluded by findKeysBefore(). */
+  KeySet retainedKeys_;
+
+  /** Update the Timestamps associated with the keys */
+  void updateKeyTimestampMap(const KeyTimestampMap& newTimestamps);
+
+  /** Erase keys from the Key-Timestamps database and the retained set. */
+  void eraseKeyTimestampMap(const KeyVector& keys);
+
+  /**
+   * Insert keysToRetain into the retained set, then erase keysToRelease. Call
+   * this before findKeysBefore() so a release takes effect in the same update.
+   */
+  void updateRetainedKeys(const KeySet& keysToRetain, const KeySet& keysToRelease);
+
+  /** Find the most recent timestamp of the system */
+  double getCurrentTimestamp() const;
+
+  /** Find the keys with timestamps before the provided time, skipping retained keys. */
+  KeyVector findKeysBefore(double timestamp) const;
+
+  /** Find all of the keys associated with timestamps before the provided time */
+  KeyVector findKeysAfter(double timestamp) const;
+
+}; // FixedLagSmoother
+
+/// Typedef for matlab wrapping
+typedef FixedLagSmoother::KeyTimestampMap FixedLagSmootherKeyTimestampMap;
+typedef FixedLagSmootherKeyTimestampMap::value_type FixedLagSmootherKeyTimestampMapValue;
+typedef FixedLagSmoother::Result FixedLagSmootherResult;
+
+} /// namespace gtsam

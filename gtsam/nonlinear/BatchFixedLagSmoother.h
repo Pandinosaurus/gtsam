@@ -1,0 +1,254 @@
+/* ----------------------------------------------------------------------------
+
+ * GTSAM Copyright 2010, Georgia Tech Research Corporation,
+ * Atlanta, Georgia 30332-0415
+ * All Rights Reserved
+ * Authors: Frank Dellaert, et al. (see THANKS for the full author list)
+
+ * See LICENSE for the license information
+
+ * -------------------------------------------------------------------------- */
+
+/**
+ * @file    BatchFixedLagSmoother.h
+ * @brief   An LM-based fixed-lag smoother.
+ *
+ * @author  Michael Kaess, Stephen Williams
+ * @date    Oct 14, 2012
+ */
+
+// \callgraph
+#pragma once
+
+#include <gtsam/nonlinear/FixedLagSmoother.h>
+#include <gtsam/nonlinear/LevenbergMarquardtOptimizer.h>
+#include <queue>
+
+namespace gtsam {
+
+class GTSAM_EXPORT BatchFixedLagSmoother : public FixedLagSmoother {
+
+public:
+
+  /// Typedef for a shared pointer to an Incremental Fixed-Lag Smoother
+  typedef std::shared_ptr<BatchFixedLagSmoother> shared_ptr;
+
+  /** 
+   * Construct with parameters
+   *
+   * @param smootherLag The length of the smoother lag. Any variable older than this amount will be marginalized out.
+   * @param parameters The L-M optimization parameters
+   * @param enforceConsistency A flag indicating if the optimizer should enforce probabilistic consistency by maintaining the
+   * linearization point of all variables involved in linearized/marginal factors at the edge of the
+   * smoothing window.
+   */
+  BatchFixedLagSmoother(double smootherLag = 0.0, const LevenbergMarquardtParams& parameters = LevenbergMarquardtParams(), bool enforceConsistency = true) :
+    FixedLagSmoother(smootherLag), parameters_(parameters), enforceConsistency_(enforceConsistency) {
+  }
+
+  /** destructor */
+  ~BatchFixedLagSmoother() override {}
+
+  /** Print the factor for debugging and testing (implementing Testable) */
+  void print(const std::string& s = "BatchFixedLagSmoother:\n", const KeyFormatter& keyFormatter = DefaultKeyFormatter) const override;
+
+  /** Check if two IncrementalFixedLagSmoother Objects are equal */
+  bool equals(const FixedLagSmoother& rhs, double tol = 1e-9) const override;
+
+  /**
+   * Add new factors, updating the solution and relinearizing as needed.
+   *
+   * Every key in timestamps must name a value already held by the smoother or
+   * supplied in newTheta, even if no factor references it yet. Accepted
+   * timestamps participate in the smoother clock normally. Timestamp-before-
+   * value is not supported; a retry must supply the timestamp again along with
+   * its value.
+   *
+   * Removal indices must be within the factor graph at update entry, including
+   * empty slots; adding factors cannot make an invalid index valid. Removal
+   * indices are checked before timestamp keys. Either validation failure leaves
+   * the smoother unchanged, with no part of the update applied.
+   *
+   * @throws std::out_of_range identifying a removal index outside the graph.
+   * @throws std::invalid_argument identifying a timestamp key with no value in
+   * the smoother or newTheta.
+   */
+  Result update(const NonlinearFactorGraph& newFactors = NonlinearFactorGraph(),
+                const Values& newTheta = Values(),
+                const KeyTimestampMap& timestamps = KeyTimestampMap(),
+                const FactorIndices& factorsToRemove = FactorIndices()) override;
+
+  /**
+   * Add new factors as in update(), and also change the persistent set of
+   * retained keys before choosing which variables to marginalize.
+   *
+   * A retained key is never marginalized because of the lag, however old its
+   * timestamp; it stays retained across later updates, including calls to the
+   * four-argument update(), until it is released. Releasing a key whose
+   * timestamp is already outside the lag window marginalizes it in this same
+   * update. The retained set is changed only after the update is validated, so
+   * a rejected update leaves it unchanged.
+   *
+   * Every key in keysToRetain must name a value the smoother already holds or
+   * one supplied in newTheta in this update. Releasing a key that is not
+   * retained has no effect. A retained key is dropped from the set when its
+   * variable is removed from the smoother, for example because its last factor
+   * was removed.
+   *
+   * This overload is available only on the concrete smoother; calls through a
+   * FixedLagSmoother reference use the four-argument update().
+   *
+   * @param keysToRetain  keys to add to the retained set
+   * @param keysToRelease keys to remove from the retained set; applied after
+   *                      keysToRetain, so a key in both is released
+   * @throws std::invalid_argument identifying a key in keysToRetain with no
+   * value in the smoother or newTheta, in addition to the exceptions thrown by
+   * the four-argument update().
+   */
+  Result update(const NonlinearFactorGraph& newFactors,
+                const Values& newTheta,
+                const KeyTimestampMap& timestamps,
+                const FactorIndices& factorsToRemove,
+                const KeySet& keysToRetain,
+                const KeySet& keysToRelease = KeySet());
+
+  /** Compute an estimate from the incomplete linear delta computed during the last update.
+   * This delta is incomplete because it was not updated below wildfire_threshold.  If only
+   * a single variable is needed, it is faster to call calculateEstimate(const KEY&).
+   */
+  Values calculateEstimate() const override {
+    return theta_.retract(delta_);
+  }
+
+  /** Compute estimates for a set of variables only, one retract per key. */
+  Values calculateEstimate(const KeyVector& keys) const override {
+    return theta_.retract(delta_, keys);
+  }
+
+  /** Compute an estimate for a single variable using its incomplete linear delta computed
+   * during the last update.  This is faster than calling the no-argument version of
+   * calculateEstimate, which operates on all variables.
+   * @param key
+   * @return
+   */
+  template<class VALUE>
+  VALUE calculateEstimate(Key key) const {
+    const Vector delta = delta_.at(key);
+    return traits<VALUE>::Retract(theta_.at<VALUE>(key), delta);
+  }
+
+  /** read the current set of optimizer parameters */
+  const LevenbergMarquardtParams& params() const {
+    return parameters_;
+  }
+
+  /** update the current set of optimizer parameters */
+  LevenbergMarquardtParams& params() {
+    return parameters_;
+  }
+
+  /** Access the current set of factors */
+  const NonlinearFactorGraph& getFactors() const {
+    return factors_;
+  }
+
+  /** Access the current linearization point */
+  const Values& getLinearizationPoint() const {
+    return theta_;
+  }
+
+  /** Access the current ordering */
+  const Ordering& getOrdering() const {
+    return ordering_;
+  }
+
+  /** Access the current set of deltas to the linearization point */
+  const VectorValues& getDelta() const {
+    return delta_;
+  }
+
+  /// Calculate marginal covariance on given variable
+  Matrix marginalCovariance(Key key) const;
+
+  /// Marginalize specific keys from a linear graph.
+  /// Does not check whether keys actually exist in graph.
+  /// In that case will fail somewhere deep within elimination
+  static GaussianFactorGraph CalculateMarginalFactors(
+      const GaussianFactorGraph& graph, const KeyVector& keys,
+      const GaussianFactorGraph::Eliminate& eliminateFunction = EliminatePreferCholesky);
+
+  /// Marginalize specific keys from a nonlinear graph, wrap in LinearContainers
+  static NonlinearFactorGraph CalculateMarginalFactors(
+      const NonlinearFactorGraph& graph, const Values& theta, const KeyVector& keys,
+      const GaussianFactorGraph::Eliminate& eliminateFunction = EliminatePreferCholesky);
+
+protected:
+
+  /** A typedef defining an Key-Factor mapping **/
+  typedef std::map<Key, KeySet > FactorIndex;
+
+  /** The L-M optimization parameters **/
+  LevenbergMarquardtParams parameters_;
+
+  /** A flag indicating if the optimizer should enforce probabilistic consistency by maintaining the
+   * linearization point of all variables involved in linearized/marginal factors at the edge of the
+   * smoothing window. This idea is from ??? TODO: Look up paper reference **/
+  bool enforceConsistency_;
+
+  /** The nonlinear factors **/
+  NonlinearFactorGraph factors_;
+
+  /** The current linearization point **/
+  Values theta_;
+
+  /** The set of values involved in current linear factors. **/
+  Values linearValues_;
+
+  /** The current ordering */
+  Ordering ordering_;
+
+  /** The current set of linear deltas */
+  VectorValues delta_;
+
+  /** The set of available factor graph slots. These occur because we are constantly deleting factors, leaving holes. **/
+  std::queue<size_t> availableSlots_;
+
+  /** A cross-reference structure to allow efficient factor lookups by key **/
+  FactorIndex factorIndex_;
+
+  /** Shared body of both update() overloads. */
+  Result updateImpl(const NonlinearFactorGraph& newFactors,
+                    const Values& newTheta,
+                    const KeyTimestampMap& timestamps,
+                    const FactorIndices& factorsToRemove,
+                    const KeySet& keysToRetain,
+                    const KeySet& keysToRelease);
+
+  /** Augment the list of factors with a set of new factors */
+  void insertFactors(const NonlinearFactorGraph& newFactors);
+
+  /** Remove factors from the list of factors by slot index */
+  void removeFactors(const std::set<size_t>& deleteFactors);
+
+  /** Erase any keys associated with timestamps before the provided time */
+  void eraseKeys(const KeyVector& keys);
+
+  /** Use colamd to update into an efficient ordering */
+  void reorder(const KeyVector& marginalizeKeys = KeyVector());
+
+  /** Optimize the current graph using a modified version of L-M */
+  Result optimize();
+
+  /** Marginalize out selected variables */
+  void marginalize(const KeyVector& marginalizableKeys);
+
+private:
+  /** Private methods for printing debug information */
+  static void PrintKeySet(const KeySet& keys, const std::string& label);
+  static void PrintSymbolicFactor(const NonlinearFactor::shared_ptr& factor);
+  static void PrintSymbolicFactor(const GaussianFactor::shared_ptr& factor);
+  static void PrintSymbolicGraph(const NonlinearFactorGraph& graph, const std::string& label);
+  static void PrintSymbolicGraph(const GaussianFactorGraph& graph, const std::string& label);
+}; // BatchFixedLagSmoother
+
+} /// namespace gtsam

@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.0)
+cmake_minimum_required(VERSION 3.10)
 project(METIS)
 
 # Add flags for currect directory and below
@@ -46,10 +46,6 @@ include_directories(include)
 # Recursively look for CMakeLists.txt in subdirs.
 add_subdirectory("include")
 add_subdirectory("libmetis")
-
-if(GTSAM_BUILD_METIS_EXECUTABLES)
-  add_subdirectory("programs")
-endif()
 
 set(GTSAM_EXPORTED_TARGETS "${GTSAM_EXPORTED_TARGETS}" PARENT_SCOPE)
 # Export macros assumed in metis public headers to clients of the library.

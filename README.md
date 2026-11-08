@@ -1,10 +1,25 @@
-# README - Georgia Tech Smoothing and Mapping Library
 
-**Important Note**
+# GTSAM: Georgia Tech Smoothing and Mapping Library
+[![C++ API](https://img.shields.io/badge/API-C%2B%2B-blue.svg)](https://gtsam.org/doxygen/)
+[![Docs](https://img.shields.io/badge/Docs-Python%20%7C%20C%2B%2B-green.svg)](https://borglab.github.io/gtsam/)
 
-As of August 1 2020, the `develop` branch is officially in "Pre 4.1" mode, and features deprecated in 4.0 have been removed. Please use the last [4.0.3 release](https://github.com/borglab/gtsam/releases/tag/4.0.3) if you need those features. 
+<p align="center">
+  <a href="https://borglab.github.io/gtsam/">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/borglab/gtsam/develop/doc/images/gtsam-manifold-optimization-dark.png">
+      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/borglab/gtsam/develop/doc/images/gtsam-manifold-optimization-light.png">
+      <img alt="GTSAM manifold optimization workflow: build a factor graph, linearize and solve in tangent spaces, retract to manifolds, and iterate to convergence." src="https://raw.githubusercontent.com/borglab/gtsam/develop/doc/images/gtsam-manifold-optimization-light.png" width="100%">
+    </picture>
+  </a>
+</p>
 
-However, most are easily converted and can be tracked down (in 4.0.3) by disabling the cmake flag `GTSAM_ALLOW_DEPRECATED_SINCE_V4`.
+**Development branch**
+
+The `develop` branch contains changes intended for the next GTSAM release and
+may include API changes. For production use, choose the latest stable version
+from the [GTSAM releases](https://github.com/borglab/gtsam/releases). Current
+development builds require C++17; Boost support is optional and controlled by
+CMake options.
 
 ## What is GTSAM?
 
@@ -13,16 +28,28 @@ mapping (SAM) in robotics and vision, using Factor Graphs and Bayes
 Networks as the underlying computing paradigm rather than sparse
 matrices.
 
-The current support matrix is:
 
-| Platform     | Compiler  | Build Status  |
-|:------------:|:---------:|:-------------:|
-| Ubuntu 18.04 | gcc/clang | ![Linux CI](https://github.com/borglab/gtsam/workflows/Linux%20CI/badge.svg) |
-| macOS        | clang     | ![macOS CI](https://github.com/borglab/gtsam/workflows/macOS%20CI/badge.svg) |
-| Windows      | MSVC      | ![Windows CI](https://github.com/borglab/gtsam/workflows/Windows%20CI/badge.svg) |
 
+<!-- Main CI Badges (develop branch) -->
+| CI Status | Platform | Compiler |
+|:----------|:---------|:---------|
+| [![Python CI](https://github.com/borglab/gtsam/actions/workflows/build-python.yml/badge.svg?branch=develop)](https://github.com/borglab/gtsam/actions/workflows/build-python.yml?query=branch%3Adevelop) | Ubuntu 22.04, macOS 15, Windows 2022 | GCC/Clang/MSVC |
+| [![vcpkg](https://github.com/borglab/gtsam/actions/workflows/vcpkg.yml/badge.svg?branch=develop)](https://github.com/borglab/gtsam/actions/workflows/vcpkg.yml?query=branch%3Adevelop) | Latest Windows/Ubuntu/Mac | - |
+| [![Build Wheels for Develop](https://github.com/borglab/gtsam/actions/workflows/build-cibw.yml/badge.svg?branch=develop)](https://github.com/borglab/gtsam/actions/workflows/build-cibw.yml?query=branch%3Adevelop) | See [pypi files](https://pypi.org/project/gtsam-develop/#files); no Windows| - |
 
 On top of the C++ library, GTSAM includes [wrappers for MATLAB & Python](#wrappers).
+
+
+## Documentation
+
+- **C++ API Docs:** [https://gtsam.org/doxygen/](https://gtsam.org/doxygen/)
+- **Python API Docs:** [https://borglab.github.io/gtsam/](https://borglab.github.io/gtsam/)
+- **CUDA linear solvers:** [doc/CUDA_LINEAR_SOLVERS.md](doc/CUDA_LINEAR_SOLVERS.md)
+<!-- TODO: Perhaps include links to source code as well? But the wrappers doesn't really help too much understanding the source code. 
+C++: https://github.com/borglab/gtsam/tree/develop/gtsam
+Matlab wrapper: https://github.com/borglab/gtsam/blob/develop/matlab/README.md
+Python wrapper https://github.com/borglab/gtsam/blob/develop/python/README.md
+-->
 
 
 ## Quickstart
@@ -30,39 +57,103 @@ On top of the C++ library, GTSAM includes [wrappers for MATLAB & Python](#wrappe
 In the root library folder execute:
 
 ```sh
-#!bash
-$ mkdir build
-$ cd build
-$ cmake ..
-$ make check (optional, runs unit tests)
-$ make install
+cmake -S . -B build
+cmake --build build --target check  # optional, runs all unit tests
+cmake --build build --target install
 ```
 
 Prerequisites:
 
-- [Boost](http://www.boost.org/users/download/) >= 1.65 (Ubuntu: `sudo apt-get install libboost-all-dev`)
-- [CMake](http://www.cmake.org/cmake/resources/software.html) >= 3.0 (Ubuntu: `sudo apt-get install cmake`)
-- A modern compiler, i.e., at least gcc 4.7.3 on Linux.
+- [CMake](https://cmake.org/download/) 3.16 or newer
+- A compiler with C++17 support. The continuously tested toolchains are:
+    - Linux: GCC 11, 13, 14, or 15 and Clang 11, 14, or 16
+    - macOS: Xcode 16
+    - Windows: MSVC toolset 14.40
 
-Optional prerequisites - used automatically if findable by CMake:
+Older C++17-capable toolchains may work but are not continuously tested.
 
-- [Intel Threaded Building Blocks (TBB)](http://www.threadingbuildingblocks.org/) (Ubuntu: `sudo apt-get install libtbb-dev`)
-- [Intel Math Kernel Library (MKL)](http://software.intel.com/en-us/intel-mkl) (Ubuntu: [installing using APT](https://software.intel.com/en-us/articles/installing-intel-free-libs-and-python-apt-repo))
-    - See [INSTALL.md](INSTALL.md) for more installation information
-    - Note that MKL may not provide a speedup in all cases. Make sure to benchmark your problem with and without MKL.
+Optional Boost prerequisite:
+
+Boost is optional. Two CMake flags govern its use:
+
+- `GTSAM_USE_BOOST_FEATURES=ON|OFF` controls the remaining Boost-dependent features.
+- `GTSAM_ENABLE_BOOST_SERIALIZATION=ON|OFF` controls Boost serialization of factor graphs, factors, and related types.
+
+Both options default to ON for ordinary CMake builds and OFF inside ROS 2
+builds (`colcon`, or an install prefix under `/opt/ros/`). If either option is
+ON, install
+[Boost](https://www.boost.org/users/download/) 1.70 or newer:
+
+- macOS: `brew install boost`
+- Ubuntu: `sudo apt-get install libboost-all-dev`
+- Windows: use [vcpkg](https://github.com/microsoft/vcpkg), or see
+  [cmake/HandleBoost.cmake](cmake/HandleBoost.cmake) for manual-installation hints.
+
+Optional prerequisites:
+
+- [oneTBB](https://github.com/uxlfoundation/oneTBB) is searched for when
+  `GTSAM_WITH_TBB=ON`, which is the default. On Ubuntu, install `libtbb-dev`.
+- [Intel oneMKL](https://www.intel.com/content/www/us/en/developer/tools/oneapi/onemkl-download.html)
+  is used only when `GTSAM_WITH_EIGEN_MKL=ON`. See [INSTALL.md](INSTALL.md) for
+  setup instructions, and benchmark your workload with and without MKL.
 
 ## GTSAM 4 Compatibility
 
-GTSAM 4 introduces several new features, most notably Expressions and a Python toolbox. It also introduces traits, a C++ technique that allows optimizing with non-GTSAM types. That opens the door to retiring geometric types such as Point2 and Point3 to pure Eigen types, which we also do. A significant change which will not trigger a compile error is that zero-initializing of Point2 and Point3 is deprecated, so please be aware that this might render functions using their default constructor incorrect.
+GTSAM 4 introduced Expressions, a Python toolbox, and traits that allow
+optimization with non-GTSAM types. `Point2` and `Point3` are Eigen vector aliases;
+their default constructors do not initialize their coefficients, so initialize
+them explicitly before use.
 
-GTSAM 4 also deprecated some legacy functionality and wrongly named methods. If you are on a 4.0.X release, you can define the flag `GTSAM_ALLOW_DEPRECATED_SINCE_V4` to use the deprecated methods.
-
-GTSAM 4.1 added a new pybind wrapper, and **removed** the deprecated functionality. There is a flag `GTSAM_ALLOW_DEPRECATED_SINCE_V41` for newly deprecated methods since the 4.1 release, which is on by default, allowing anyone to just pull version 4.1 and compile.
+`GTSAM_ALLOW_DEPRECATED_SINCE_V43` controls APIs deprecated for the GTSAM 4.3
+release and defaults to ON. Disable it while migrating code to identify APIs
+scheduled for removal after 4.3.
 
 
 ## Wrappers
 
 We provide support for [MATLAB](matlab/README.md) and [Python](python/README.md) wrappers for GTSAM. Please refer to the linked documents for more details.
+
+## Citation
+
+If you are using GTSAM for academic work, please use the following citation:
+
+```bibtex
+@software{Dellaert26zenodo_GTSAM_4_3,
+  author       = {Dellaert, Frank and GTSAM Contributors},
+  title        = {GTSAM 4.3.0},
+  month        = sep,
+  year         = 2026,
+  publisher    = {Zenodo},
+  version      = {4.3.0},
+  doi          = {10.5281/zenodo.22866773},
+  url          = {https://doi.org/10.5281/zenodo.22866773},
+}
+```
+
+To cite the `Factor Graphs for Robot Perception` book, please use:
+```bibtex
+@book{factor_graphs_for_robot_perception,
+    author={Frank Dellaert and Michael Kaess},
+    year={2017},
+    title={Factor Graphs for Robot Perception},
+    publisher={Foundations and Trends in Robotics, Vol. 6},
+    url={http://www.cs.cmu.edu/~kaess/pub/Dellaert17fnt.pdf}
+}
+```
+
+If you are using the IMU preintegration scheme, please cite:
+```bibtex
+@inproceedings{Forster-RSS-15,
+    author    = {Christian Forster and Luca Carlone and Frank Dellaert and Davide Scaramuzza},
+    title     = {IMU Preintegration on Manifold for Efficient Visual-Inertial Maximum-a-Posteriori Estimation},
+    booktitle = {Proceedings of Robotics: Science and Systems},
+    year      = {2015},
+    address   = {Rome, Italy},
+    month     = {July},
+    doi       = {10.15607/RSS.2015.XI.006}
+}
+```
+
 
 ## The Preintegrated IMU Factor
 
@@ -72,8 +163,7 @@ GTSAM includes a state of the art IMU handling scheme based on
 
 Our implementation improves on this using integration on the manifold, as detailed in
 
-- Luca Carlone, Zsolt Kira, Chris Beall, Vadim Indelman, and Frank Dellaert, _"Eliminating conditionally independent sets in factor graphs: a unifying perspective based on smart factors"_, Int. Conf. on Robotics and Automation (ICRA), 2014. [[link]](https://ieeexplore.ieee.org/abstract/document/6907483)
-- Christian Forster, Luca Carlone, Frank Dellaert, and Davide Scaramuzza, "IMU Preintegration on Manifold for Efficient Visual-Inertial Maximum-a-Posteriori Estimation", Robotics: Science and Systems (RSS), 2015. [[link]](http://www.roboticsproceedings.org/rss11/p06.pdf)
+- Christian Forster, Luca Carlone, Frank Dellaert, and Davide Scaramuzza, _"IMU Preintegration on Manifold for Efficient Visual-Inertial Maximum-a-Posteriori Estimation"_, Robotics: Science and Systems (RSS), 2015. [[link]](https://www.roboticsproceedings.org/rss11/p06.pdf)
 
 If you are using the factor in academic work, please cite the publications above.
 
@@ -82,13 +172,13 @@ In GTSAM 4 a new and more efficient implementation, based on integrating on the 
 
 ## Additional Information
 
-There is a [`GTSAM users Google group`](https://groups.google.com/forum/#!forum/gtsam-users) for general discussion.
+There is a [GTSAM users Google group](https://groups.google.com/forum/#!forum/gtsam-users) for general discussion.
 
-Read about important [`GTSAM-Concepts`](GTSAM-Concepts.md) here. A primer on GTSAM Expressions,
-which support (superfast) automatic differentiation,
-can be found on the [GTSAM wiki on BitBucket](https://bitbucket.org/gtborg/gtsam/wiki/Home).
+Read about important [GTSAM concepts](doc/GTSAM-Concepts.md). A primer on
+GTSAM Expressions, which support efficient automatic differentiation, is
+available in [doc/expressions.md](doc/expressions.md).
 
-See the [`INSTALL`](INSTALL.md) file for more detailed installation instructions.
+See the [`INSTALL`](INSTALL.md) file for more detailed installation instructions. Our CI/CD process is detailed in [workflows.md](doc/workflows.md).
 
 GTSAM is open source under the BSD license, see the [`LICENSE`](LICENSE) and [`LICENSE.BSD`](LICENSE.BSD) files.
 

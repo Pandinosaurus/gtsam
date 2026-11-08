@@ -16,7 +16,10 @@
  * @date    April 2016
  */
 
+#pragma once
+
 #include "NonlinearOptimizerState.h"
+#include "LevenbergMarquardtPolicy.h"
 
 #include <gtsam/nonlinear/Values.h>
 #include <gtsam/linear/GaussianFactorGraph.h>
@@ -24,8 +27,6 @@
 #include <gtsam/linear/NoiseModel.h>
 #include <gtsam/base/Matrix.h>
 #include <gtsam/base/Vector.h>
-
-#include <boost/shared_ptr.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -49,30 +50,27 @@ struct LevenbergMarquardtState : public NonlinearOptimizerState {
                                    // optimization (for each iteration, LM tries multiple
                                    // inner iterations with different lambdas)
 
-  LevenbergMarquardtState(const Values& initialValues, double error, double lambda,
-                          double currentFactor, unsigned int iterations = 0,
+  LevenbergMarquardtState(const Values& initialValues, double _error, double _lambda,
+                          double currentFactor, unsigned int _iterations = 0,
                           unsigned int totalNumberInnerIterations = 0)
-      : NonlinearOptimizerState(initialValues, error, iterations),
-        lambda(lambda),
+      : NonlinearOptimizerState(initialValues, _error, _iterations),
+        lambda(_lambda),
         currentFactor(currentFactor),
         totalNumberInnerIterations(totalNumberInnerIterations) {}
 
   // Constructor version that takes ownership of values
-  LevenbergMarquardtState(Values&& initialValues, double error, double lambda, double currentFactor,
-                          unsigned int iterations = 0, unsigned int totalNumberInnerIterations = 0)
-      : NonlinearOptimizerState(initialValues, error, iterations),
-        lambda(lambda),
+  LevenbergMarquardtState(Values&& initialValues, double _error, double _lambda, double currentFactor,
+                          unsigned int _iterations = 0, unsigned int totalNumberInnerIterations = 0)
+      : NonlinearOptimizerState(initialValues, _error, _iterations),
+        lambda(_lambda),
         currentFactor(currentFactor),
         totalNumberInnerIterations(totalNumberInnerIterations) {}
 
   // Applies policy to *increase* lambda: should be used if the current update was NOT successful
   // TODO(frank): non-const method until Values properly support std::move
   void increaseLambda(const LevenbergMarquardtParams& params) {
-    lambda *= currentFactor;
+    increaseLevenbergMarquardtLambda(params, &lambda, &currentFactor);
     totalNumberInnerIterations += 1;
-    if (!params.useFixedLambdaFactor) {
-      currentFactor *= 2.0;
-    }
   }
 
   // Apply policy to decrease lambda if the current update was successful
@@ -81,14 +79,8 @@ struct LevenbergMarquardtState : public NonlinearOptimizerState {
   std::unique_ptr<This> decreaseLambda(const LevenbergMarquardtParams& params, double stepQuality,
                                        Values&& newValues, double newError) const {
     double newLambda = lambda, newFactor = currentFactor;
-    if (params.useFixedLambdaFactor) {
-      newLambda /= currentFactor;
-    } else {
-      // TODO(frank): odd that currentFactor is not used to change lambda here...
-      newLambda *= std::max(1.0 / 3.0, 1.0 - pow(2.0 * stepQuality - 1.0, 3));
-      newFactor = 2.0 * currentFactor;
-    }
-    newLambda = std::max(params.lambdaLowerBound, newLambda);
+    decreaseLevenbergMarquardtLambda(params, stepQuality, &newLambda,
+                                     &newFactor);
     return std::unique_ptr<This>(new This(std::move(newValues), newError, newLambda, newFactor,
                                           iterations + 1, totalNumberInnerIterations + 1));
   }
@@ -119,18 +111,19 @@ struct LevenbergMarquardtState : public NonlinearOptimizerState {
     if (!item->model)
       *item = CachedModel(dim, 1.0 / std::sqrt(lambda));
     return item;
-  };
+  }
 
   /// Build a damped system for a specific lambda, vanilla version
   GaussianFactorGraph buildDampedSystem(GaussianFactorGraph damped /* gets copied */) const {
     noiseModelCache.resize(0);
     // for each of the variables, add a prior
     damped.reserve(damped.size() + values.size());
-    for (const auto key_value : values) {
-      const Key key = key_value.key;
-      const size_t dim = key_value.value.dim();
+    std::map<Key,size_t> dims = values.dims();
+    for (const auto& key_dim : dims) {
+      const Key& key = key_dim.first;
+      const size_t& dim = key_dim.second;
       const CachedModel* item = getCachedModel(dim);
-      damped += boost::make_shared<JacobianFactor>(key, item->A, item->b, item->model);
+      damped.emplace_shared<JacobianFactor>(key, item->A, item->b, item->model);
     }
     return damped;
   }
@@ -146,7 +139,7 @@ struct LevenbergMarquardtState : public NonlinearOptimizerState {
         const size_t dim = key_vector.second.size();
         CachedModel* item = getCachedModel(dim);
         item->A.diagonal() = sqrtHessianDiagonal.at(key);  // use diag(hessian)
-        damped += boost::make_shared<JacobianFactor>(key, item->A, item->b, item->model);
+        damped.emplace_shared<JacobianFactor>(key, item->A, item->b, item->model);
       } catch (const std::out_of_range&) {
         continue;  // Don't attempt any damping if no key found in diagonal
       }

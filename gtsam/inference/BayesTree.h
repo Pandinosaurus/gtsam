@@ -19,13 +19,23 @@
 
 #pragma once
 
-#include <boost/shared_ptr.hpp>
-
 #include <gtsam/inference/Key.h>
 #include <gtsam/base/FastList.h>
 #include <gtsam/base/ConcurrentMap.h>
 #include <gtsam/base/FastVector.h>
 
+#if GTSAM_ENABLE_BOOST_SERIALIZATION
+#include <boost/serialization/shared_ptr.hpp>
+#include <boost/serialization/split_member.hpp>
+#include <boost/serialization/vector.hpp>
+#include <boost/serialization/version.hpp>
+
+#include <stdexcept>
+#include <unordered_map>
+#include <vector>
+#endif
+
+#include <memory>
 #include <string>
 
 namespace gtsam {
@@ -59,7 +69,7 @@ namespace gtsam {
    * @tparam CLIQUE The type of the clique data structure, defaults to BayesTreeClique, normally do not change this
    * as it is only used when developing special versions of BayesTree, e.g. for ISAM2.
    *
-   * \addtogroup Multifrontal
+   * \ingroup Multifrontal
    * \nosubgrouping
    */
   template<class CLIQUE>
@@ -67,21 +77,21 @@ namespace gtsam {
   {
   protected:
     typedef BayesTree<CLIQUE> This;
-    typedef boost::shared_ptr<This> shared_ptr;
+    typedef std::shared_ptr<This> shared_ptr;
 
   public:
     typedef CLIQUE Clique; ///< The clique type, normally BayesTreeClique
-    typedef boost::shared_ptr<Clique> sharedClique; ///< Shared pointer to a clique
+    typedef std::shared_ptr<Clique> sharedClique; ///< Shared pointer to a clique
     typedef Clique Node; ///< Synonym for Clique (TODO: remove)
     typedef sharedClique sharedNode; ///< Synonym for sharedClique (TODO: remove)
     typedef typename CLIQUE::ConditionalType ConditionalType;
-    typedef boost::shared_ptr<ConditionalType> sharedConditional;
+    typedef std::shared_ptr<ConditionalType> sharedConditional;
     typedef typename CLIQUE::BayesNetType BayesNetType;
-    typedef boost::shared_ptr<BayesNetType> sharedBayesNet;
+    typedef std::shared_ptr<BayesNetType> sharedBayesNet;
     typedef typename CLIQUE::FactorType FactorType;
-    typedef boost::shared_ptr<FactorType> sharedFactor;
+    typedef std::shared_ptr<FactorType> sharedFactor;
     typedef typename CLIQUE::FactorGraphType FactorGraphType;
-    typedef boost::shared_ptr<FactorGraphType> sharedFactorGraph;
+    typedef std::shared_ptr<FactorGraphType> sharedFactorGraph;
     typedef typename FactorGraphType::Eliminate Eliminate;
     typedef typename CLIQUE::EliminationTraitsType EliminationTraitsType;
 
@@ -113,16 +123,20 @@ namespace gtsam {
 
     /// @}
 
+    /** Destructor */
+    ~BayesTree(); 
+
     /** Assignment operator */
     This& operator=(const This& other);
 
+  public:
+  
     /// @name Testable
     /// @{
 
     /** check equality */
     bool equals(const This& other, double tol = 1e-9) const;
 
-  public:
     /** print */
     void print(const std::string& s = "",
         const KeyFormatter& keyFormatter = DefaultKeyFormatter) const;
@@ -139,11 +153,11 @@ namespace gtsam {
       return nodes_.empty();
     }
 
-    /** return nodes */
+    /** Return nodes. Each node is a clique of variables obtained after elimination. */
     const Nodes& nodes() const { return nodes_; }
 
     /** Access node by variable */
-    const sharedNode operator[](Key j) const { return nodes_.at(j); }
+    sharedClique operator[](Key j) const { return nodes_.at(j); }
 
     /** return root cliques */
     const Roots& roots() const { return roots_;  }
@@ -176,6 +190,11 @@ namespace gtsam {
      */
     sharedFactorGraph joint(Key j1, Key j2, const Eliminate& function = EliminationTraitsType::DefaultEliminate) const;
 
+    /** Return a joint factor graph on an arbitrary set of variables. */
+    sharedFactorGraph joint(
+        const KeyVector& keys,
+        const Eliminate& function = EliminationTraitsType::DefaultEliminate) const;
+
     /**
      * return joint on two variables as a BayesNet
      * Limitation: can only calculate joint if cliques are disjoint or one of them is root
@@ -183,12 +202,28 @@ namespace gtsam {
     sharedBayesNet jointBayesNet(Key j1, Key j2, const Eliminate& function = EliminationTraitsType::DefaultEliminate) const;
 
     /**
-     * Read only with side effects
+     * Return a joint marginal Bayes net whose elimination order follows the
+     * first occurrence of each key.
      */
+    sharedBayesNet jointBayesNet(
+        const KeyVector& keys,
+        const Eliminate& function = EliminationTraitsType::DefaultEliminate) const;
 
-    /** saves the Tree to a text file in GraphViz format */
-    void saveGraph(const std::string& s, const KeyFormatter& keyFormatter = DefaultKeyFormatter) const;
+    /// @}   
+    /// @name Graph Display
+    /// @{
 
+    /// Output to graphviz format, stream version.
+    void dot(std::ostream& os, const KeyFormatter& keyFormatter = DefaultKeyFormatter) const;
+
+    /// Output to graphviz format string.
+    std::string dot(
+        const KeyFormatter& keyFormatter = DefaultKeyFormatter) const;
+
+    /// output to file with graphviz format.
+    void saveGraph(const std::string& filename,
+                  const KeyFormatter& keyFormatter = DefaultKeyFormatter) const;
+  
     /// @}
     /// @name Advanced Interface
     /// @{
@@ -233,11 +268,21 @@ namespace gtsam {
     /** Add all cliques in this BayesTree to the specified factor graph */
     void addFactorsToGraph(FactorGraph<FactorType>* graph) const;
 
-  protected:
+    /**
+     * @brief Returns the set of keys from the tree that are affected by a
+     * update to 'keys'
+     * @param keys: The keys updated and in-turn affecting the tree
+     * @returns The set of keys from the tree that are affected
+     * @note Note: Return matches contents of BayesNet from removeTop without
+     * affecting the tree
+     */
+    gtsam::KeySet collectAffectedKeys(const gtsam::KeyVector& keys) const;
+
+   protected:
 
     /** private helper method for saving the Tree to a text file in GraphViz format */
-    void saveGraph(std::ostream &s, sharedClique clique, const KeyFormatter& keyFormatter,
-        int parentnum = 0) const;
+    void dot(std::ostream &s, sharedClique clique, const KeyFormatter& keyFormatter,
+             size_t parentnum = 0) const;
 
     /** Gather data on a single clique */
     void getCliqueData(sharedClique clique, BayesTreeCliqueData* stats) const;
@@ -248,43 +293,159 @@ namespace gtsam {
     /** Fill the nodes index for a subtree */
     void fillNodesIndex(const sharedClique& subtree);
 
+    /// @brief Helper for collectAffectedKeys that recursively aggregates
+    /// affected keys from a path from 'clique' to the root of tree
+    void collectAffectedPathKeys(gtsam::KeySet& traversedKeys,
+                                 const sharedClique& clique) const;
+
     // Friend JunctionTree because it directly fills roots and nodes index.
-    template<class BAYESRTEE, class GRAPH> friend class EliminatableClusterTree;
+    template<class BAYESTREE, class GRAPH> friend class EliminatableClusterTree;
 
    private:
-    /** Serialization function */
+#if GTSAM_ENABLE_BOOST_SERIALIZATION
+    /** Save the tree without recursively serializing clique links. */
     friend class boost::serialization::access;
     template<class ARCHIVE>
-    void serialize(ARCHIVE & ar, const unsigned int /*version*/) {
-      ar & BOOST_SERIALIZATION_NVP(nodes_);
-      ar & BOOST_SERIALIZATION_NVP(roots_);
+    void save(ARCHIVE& ar, const unsigned int version) const {
+      if (version == 0) {
+        ar & BOOST_SERIALIZATION_NVP(nodes_);
+        ar & BOOST_SERIALIZATION_NVP(roots_);
+        return;
+      }
+
+      std::vector<sharedClique> cliques, detached;
+      std::unordered_map<const Clique*, size_t> indices;
+      for (const sharedClique& root : roots_) {
+        if (!indices.emplace(root.get(), cliques.size()).second)
+          throw std::invalid_argument("BayesTree contains duplicate cliques");
+        cliques.push_back(root);
+      }
+
+      std::vector<std::vector<size_t>> children;
+      for (size_t i = 0; i < cliques.size(); ++i) {
+        sharedClique copy = std::make_shared<Clique>(*cliques[i]);
+        copy->parent_.reset();
+        copy->children.clear();
+        copy->is_root = true;
+        detached.push_back(copy);
+        children.emplace_back();
+        for (const sharedClique& child : cliques[i]->children) {
+          if (!indices.emplace(child.get(), cliques.size()).second)
+            throw std::invalid_argument("BayesTree contains duplicate cliques");
+          children.back().push_back(cliques.size());
+          cliques.push_back(child);
+        }
+      }
+
+      const size_t rootCount = roots_.size();
+      ar & BOOST_SERIALIZATION_NVP(rootCount);
+      ar & boost::serialization::make_nvp("cliques", detached);
+      ar & BOOST_SERIALIZATION_NVP(children);
     }
+
+    /** Load either the legacy recursive format or the flat format. */
+    template<class ARCHIVE>
+    void load(ARCHIVE& ar, const unsigned int version) {
+      if (version == 0) {
+        ar & BOOST_SERIALIZATION_NVP(nodes_);
+        ar & BOOST_SERIALIZATION_NVP(roots_);
+        return;
+      }
+
+      size_t rootCount;
+      std::vector<sharedClique> cliques;
+      std::vector<std::vector<size_t>> children;
+      ar & BOOST_SERIALIZATION_NVP(rootCount);
+      ar & BOOST_SERIALIZATION_NVP(cliques);
+      ar & BOOST_SERIALIZATION_NVP(children);
+      if (rootCount > cliques.size() || children.size() != cliques.size())
+        throw std::invalid_argument("Invalid serialized BayesTree structure");
+
+      nodes_.clear();
+      roots_.assign(cliques.begin(), cliques.begin() + rootCount);
+      for (size_t i = 0; i < cliques.size(); ++i) {
+        sharedClique& clique = cliques[i];
+        clique->parent_.reset();
+        clique->children.clear();
+        clique->is_root = i < rootCount;
+      }
+      for (size_t i = 0; i < cliques.size(); ++i) {
+        sharedClique& clique = cliques[i];
+        for (size_t childIndex : children[i]) {
+          if (childIndex >= cliques.size())
+            throw std::invalid_argument("Invalid serialized BayesTree child");
+          sharedClique& child = cliques[childIndex];
+          if (!child->parent_.expired())
+            throw std::invalid_argument("Serialized BayesTree child has multiple parents");
+          clique->children.push_back(child);
+          child->parent_ = clique;
+          child->is_root = false;
+        }
+      }
+
+      for (size_t i = 0; i < cliques.size(); ++i) {
+        if ((i < rootCount) != cliques[i]->isRoot())
+          throw std::invalid_argument("Invalid serialized BayesTree roots");
+        for (Key key : cliques[i]->conditional()->frontals()) {
+          if (!nodes_.insert({key, cliques[i]}).second)
+            throw std::invalid_argument("Serialized BayesTree contains duplicate keys");
+        }
+      }
+    }
+
+    BOOST_SERIALIZATION_SPLIT_MEMBER()
+#endif
 
     /// @}
 
   }; // BayesTree
 
   /* ************************************************************************* */
-  template<class CLIQUE>
-  class BayesTreeOrphanWrapper : public CLIQUE::ConditionalType
-  {
-  public:
+  template <class CLIQUE, typename = void>
+  class BayesTreeOrphanWrapper : public CLIQUE::ConditionalType {
+   public:
     typedef CLIQUE CliqueType;
     typedef typename CLIQUE::ConditionalType Base;
 
-    boost::shared_ptr<CliqueType> clique;
+    std::shared_ptr<CliqueType> clique;
 
-    BayesTreeOrphanWrapper(const boost::shared_ptr<CliqueType>& clique) :
-      clique(clique)
-    {
-      // Store parent keys in our base type factor so that eliminating those parent keys will pull
-      // this subtree into the elimination.
-      this->keys_.assign(clique->conditional()->beginParents(), clique->conditional()->endParents());
+    /**
+     * @brief Construct a new Bayes Tree Orphan Wrapper object
+     *
+     * This object stores parent keys in our base type factor so that
+     * eliminating those parent keys will pull this subtree into the
+     * elimination.
+     *
+     * @param clique Orphan clique to add for further consideration in
+     * elimination.
+     */
+    BayesTreeOrphanWrapper(const std::shared_ptr<CliqueType>& clique)
+        : clique(clique) {
+      this->keys_.assign(clique->conditional()->beginParents(),
+                         clique->conditional()->endParents());
     }
 
-    void print(const std::string& s="", const KeyFormatter& formatter = DefaultKeyFormatter) const override {
+    void print(
+        const std::string& s = "",
+        const KeyFormatter& formatter = DefaultKeyFormatter) const override {
       clique->print(s + "stored clique", formatter);
     }
   };
 
 } /// namespace gtsam
+
+#if GTSAM_ENABLE_BOOST_SERIALIZATION
+namespace boost {
+namespace serialization {
+
+/** Version of the iterative BayesTree serialization format. */
+template <class CLIQUE>
+struct version<gtsam::BayesTree<CLIQUE>> {
+  typedef mpl::int_<1> type;
+  typedef mpl::integral_c_tag tag;
+  BOOST_STATIC_CONSTANT(int, value = type::value);
+};
+
+}  // namespace serialization
+}  // namespace boost
+#endif

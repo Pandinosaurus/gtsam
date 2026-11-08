@@ -18,10 +18,12 @@
 #pragma once
 
 #include <gtsam/base/Lie.h>
+#include <gtsam/base/MatrixConstants.h>
 #include <gtsam/base/concepts.h>
-#include <gtsam/geometry/SO3.h> // Logmap/Expmap derivatives
-#include <limits>
+#include <gtsam/geometry/SO3.h>  // Logmap/Expmap derivatives
+
 #include <iostream>
+#include <limits>
 
 #define QUATERNION_TYPE Eigen::Quaternion<_Scalar,_Options>
 
@@ -45,9 +47,8 @@ struct traits<QUATERNION_TYPE> {
   /// @}
   /// @name Basic manifold traits
   /// @{
-  enum {
-    dimension = 3
-  };
+  inline constexpr static auto dimension = 3;
+  static int GetDimension(const Q& /* g */) { return 3; }
   typedef OptionalJacobian<3, 3> ChartJacobian;
   typedef Eigen::Matrix<_Scalar, 3, 1, _Options, 3, 1> TangentVector;
 
@@ -55,14 +56,14 @@ struct traits<QUATERNION_TYPE> {
   /// @name Lie group traits
   /// @{
   static Q Compose(const Q &g, const Q & h,
-      ChartJacobian Hg = boost::none, ChartJacobian Hh = boost::none) {
+      ChartJacobian Hg = {}, ChartJacobian Hh = {}) {
     if (Hg) *Hg = h.toRotationMatrix().transpose();
     if (Hh) *Hh = I_3x3;
     return g * h;
   }
 
   static Q Between(const Q &g, const Q & h,
-      ChartJacobian Hg = boost::none, ChartJacobian Hh = boost::none) {
+      ChartJacobian Hg = {}, ChartJacobian Hh = {}) {
     Q d = g.inverse() * h;
     if (Hg) *Hg = -d.toRotationMatrix().transpose();
     if (Hh) *Hh = I_3x3;
@@ -70,14 +71,14 @@ struct traits<QUATERNION_TYPE> {
   }
 
   static Q Inverse(const Q &g,
-      ChartJacobian H = boost::none) {
+      ChartJacobian H = {}) {
     if (H) *H = -g.toRotationMatrix();
     return g.inverse();
   }
 
   /// Exponential map, using the inlined code from Eigen's conversion from axis/angle
   static Q Expmap(const Eigen::Ref<const TangentVector>& omega,
-                  ChartJacobian H = boost::none) {
+                  ChartJacobian H = {}) {
     using std::cos;
     using std::sin;
     if (H) *H = SO3::ExpmapDerivative(omega.template cast<double>());
@@ -95,49 +96,59 @@ struct traits<QUATERNION_TYPE> {
   }
 
   /// We use our own Logmap, as there is a slight bug in Eigen
-  static TangentVector Logmap(const Q& q, ChartJacobian H = boost::none) {
-    using std::acos;
-    using std::sqrt;
+  static TangentVector Logmap(const Q& q, ChartJacobian H = {}) {
+    using std::atan;
 
-    // define these compile time constants to avoid std::abs:
-    static const double twoPi = 2.0 * M_PI, NearlyOne = 1.0 - 1e-10,
-    NearlyNegativeOne = -1.0 + 1e-10;
+    // theta = 2 * atan2(|v|, w),  omega = theta * v / |v|
+    // (C. Hertzberg et al., Information Fusion, 2011), written with atan()
+    // because it is measurably cheaper than atan2() and w >= 0 is arranged
+    // below anyway. Both theta and v/|v| are invariant to a positive rescaling
+    // of (w, v), so this stays correct when q is not of unit norm -- which
+    // matters because Rot3Q builds its quaternion straight from a rotation
+    // matrix supplied by the caller and never renormalizes.
+    //
+    // This also removes the need for the two Taylor branches the previous
+    // acos-based form required: atan is accurate as |v| -> 0, so the only
+    // degenerate case left is |v| == 0 exactly, i.e. the identity.
+    const _Scalar qw = q.w();
+    const _Scalar n = q.vec().norm();
 
     TangentVector omega;
-
-    const _Scalar qw = q.w();
-    // See Quaternion-Logmap.nb in doc for Taylor expansions
-    if (qw > NearlyOne) {
-      // Taylor expansion of (angle / s) at 1
-      // (2 + 2 * (1-qw) / 3) * q.vec();
-      omega = ( 8. / 3. - 2. / 3. * qw) * q.vec();
-    } else if (qw < NearlyNegativeOne) {
-      // Taylor expansion of (angle / s) at -1
-      // (-2 - 2 * (1 + qw) / 3) * q.vec();
-      omega = (-8. / 3. - 2. / 3. * qw) * q.vec();
+    if (n == _Scalar(0)) {
+      omega = TangentVector::Zero();
     } else {
-      // Normal, away from zero case
-      if (qw > 0) {
-        _Scalar angle = 2 * acos(qw), s = sqrt(1 - qw * qw);
-        // Important:  convert to [-pi,pi] to keep error continuous
-        if (angle > M_PI)
-          angle -= twoPi;
-        else if (angle < -M_PI)
-          angle += twoPi;
-        omega = (angle / s) * q.vec();
-      } else {
-        // Make sure that we are using a canonical quaternion with w > 0
-        _Scalar angle = 2 * acos(-qw), s = sqrt(1 - qw * qw);
-        if (angle > M_PI)
-          angle -= twoPi;
-        else if (angle < -M_PI)
-          angle += twoPi;
-        omega = (angle / s) * -q.vec();
-      }
+      // Branch exactly as the previous implementation did, so that the sign
+      // chosen at qw == 0 (an exact pi rotation, where both signs are valid
+      // logs) is unchanged. Note !(qw > 0) rather than qw < 0.
+      const bool negate = !(qw > _Scalar(0));
+      const _Scalar w = negate ? -qw : qw;
+      const _Scalar theta = (w > n) ? _Scalar(2) * atan(n / w)
+                                    : _Scalar(M_PI) - _Scalar(2) * atan(w / n);
+      omega = (negate ? -theta / n : theta / n) * q.vec();
     }
 
-    if(H) *H = SO3::LogmapDerivative(omega.template cast<double>());
+    if (H) *H = SO3::LogmapDerivative(omega.template cast<double>());
     return omega;
+  }
+
+
+
+  static Matrix3 AdjointMap(const Q &g) {
+    return g.toRotationMatrix();
+  }
+
+  using LieAlgebra = Matrix3;
+
+  static Matrix3 Hat(const Vector3& v) {
+    return SO3::Hat(v);
+  }
+  
+  static Vector3 Vee(const Matrix3& X) {
+    return SO3::Vee(X);
+  }
+
+  static Vector9 Vec(const Q& q, OptionalJacobian<9, 3> H = {}) {
+    return SO3(q.toRotationMatrix()).SO3::vec(H);
   }
 
   /// @}
@@ -145,7 +156,7 @@ struct traits<QUATERNION_TYPE> {
   /// @{
 
   static TangentVector Local(const Q& g, const Q& h,
-      ChartJacobian H1 = boost::none, ChartJacobian H2 = boost::none) {
+      ChartJacobian H1 = {}, ChartJacobian H2 = {}) {
     Q b = Between(g, h, H1, H2);
     Matrix3 D_v_b;
     TangentVector v = Logmap(b, (H1 || H2) ? &D_v_b : 0);
@@ -155,7 +166,7 @@ struct traits<QUATERNION_TYPE> {
   }
 
   static Q Retract(const Q& g, const TangentVector& v,
-      ChartJacobian H1 = boost::none, ChartJacobian H2 = boost::none) {
+      ChartJacobian H1 = {}, ChartJacobian H2 = {}) {
     Matrix3 D_h_v;
     Q b = Expmap(v,H2 ? &D_h_v : 0);
     Q h = Compose(g, b, H1, H2);
@@ -182,4 +193,3 @@ struct traits<QUATERNION_TYPE> {
 typedef Eigen::Quaternion<double, Eigen::DontAlign> Quaternion;
 
 } // \namespace gtsam
-

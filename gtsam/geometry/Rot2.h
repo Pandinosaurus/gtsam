@@ -14,31 +14,33 @@
  * @brief 2D rotation
  * @date Dec 9, 2009
  * @author Frank Dellaert
+ * @author John Lambert
  */
 
 #pragma once
 
+#include <gtsam/base/Matrix.h>
+#include <gtsam/base/MatrixConstants.h>
+#include <gtsam/base/MatrixLieGroup.h>
 #include <gtsam/geometry/Point2.h>
-#include <gtsam/base/Lie.h>
-#include <boost/optional.hpp>
 
 #include <random>
+#include <stdexcept>
+#include <tuple>
+#include <utility>
+#include <vector>
 
 namespace gtsam {
 
   /**
    * Rotation matrix
    * NOTE: the angle theta is in radians unless explicitly stated
-   * @addtogroup geometry
+   * @ingroup geometry
    * \nosubgrouping
    */
-  class GTSAM_EXPORT Rot2 : public LieGroup<Rot2, 1> {
-
+  class GTSAM_EXPORT Rot2 : public MatrixLieGroup<Rot2, 1, 2> {
     /** we store cos(theta) and sin(theta) */
     double c_, s_;
-
-    /** normalize to make sure cos and sin form unit vector */
-    Rot2& normalize();
 
     /** private constructor from cos/sin */
     inline Rot2(double c, double s) : c_(c), s_(s) {}
@@ -52,10 +54,14 @@ namespace gtsam {
     Rot2() : c_(1.0), s_(0.0) {}
     
     /** copy constructor */
-    Rot2(const Rot2& r) : Rot2(r.c_, r.s_) {}
+    Rot2(const Rot2& r) = default;
+
+    Rot2& operator=(const Rot2& other) = default;
 
     /// Constructor from angle in radians == exponential map at identity
     Rot2(double theta) : c_(cos(theta)), s_(sin(theta)) {}
+
+    // Rot2& operator=(const gtsam::Rot2& other) = default;
 
     /// Named constructor from angle in radians
     static Rot2 fromAngle(double theta) {
@@ -68,7 +74,7 @@ namespace gtsam {
       return fromAngle(theta * degree);
     }
 
-    /// Named constructor from cos(theta),sin(theta) pair, will *not* normalize!
+    /// Named constructor from cos(theta),sin(theta) pair
     static Rot2 fromCosSin(double c, double s);
 
     /**
@@ -79,13 +85,13 @@ namespace gtsam {
      * @return 2D rotation \f$ \in SO(2) \f$
      */
     static Rot2 relativeBearing(const Point2& d, OptionalJacobian<1,2> H =
-        boost::none);
+        {});
 
     /** Named constructor that behaves as atan2, i.e., y,x order (!) and normalizes */
     static Rot2 atan2(double y, double x);
 
     /**
-     * Random, generates random angle \in [-p,pi]
+     * Random, generates random angle \f$\in\f$ [-pi,pi]
      * Example:
      *   std::mt19937 engine(42);
      *   Unit3 unit = Unit3::Random(engine);
@@ -106,8 +112,8 @@ namespace gtsam {
     /// @name Group
     /// @{
 
-    /** identity */
-    inline static Rot2 identity() {  return Rot2(); }
+    /** Identity */
+    inline static Rot2 Identity() {  return Rot2(); }
 
     /** The inverse rotation - negative angle */
     Rot2 inverse() const { return Rot2(c_, -s_);}
@@ -121,14 +127,24 @@ namespace gtsam {
     /// @name Lie Group
     /// @{
 
+    using LieAlgebra = Matrix2;
+
     /// Exponential map at identity - create a rotation from canonical coordinates
-    static Rot2 Expmap(const Vector1& v, ChartJacobian H = boost::none);
+    static Rot2 Expmap(const Vector1& v, ChartJacobian H = {});
 
     /// Log map at identity - return the canonical coordinates of this rotation
-    static Vector1 Logmap(const Rot2& r, ChartJacobian H = boost::none);
+    static Vector1 Logmap(const Rot2& r, ChartJacobian H = {});
 
     /** Calculate Adjoint map */
     Matrix1 AdjointMap() const { return I_1x1; }
+
+    /// Lie-algebra adjoint (zero for abelian SO(2)).
+    static Matrix1 adjointMap(const Vector1&);
+
+    /// Apply Lie-algebra adjoint (always zero).
+    static Vector1 adjoint(const Vector1&, const Vector1&,
+                           OptionalJacobian<1, 1> Hxi = {},
+                           OptionalJacobian<1, 1> Hy = {});
 
     /// Left-trivialized derivative of the exponential map
     static Matrix ExpmapDerivative(const Vector& /*v*/) {
@@ -142,15 +158,21 @@ namespace gtsam {
 
     // Chart at origin simply uses exponential map and its inverse
     struct ChartAtOrigin {
-      static Rot2 Retract(const Vector1& v, ChartJacobian H = boost::none) {
+      static Rot2 Retract(const Vector1& v, ChartJacobian H = {}) {
         return Expmap(v, H);
       }
-      static Vector1 Local(const Rot2& r, ChartJacobian H = boost::none) {
+      static Vector1 Local(const Rot2& r, ChartJacobian H = {}) {
         return Logmap(r, H);
       }
     };
 
     using LieGroup<Rot2, 1>::inverse; // version with derivative
+
+    /// Hat maps from tangent vector to Lie algebra
+    static Matrix2 Hat(const Vector1& xi);
+
+    /// Vee maps from Lie algebra to tangent vector
+    static Vector1 Vee(const Matrix2& X);
 
     /// @}
     /// @name Group Action on Point2
@@ -159,8 +181,8 @@ namespace gtsam {
     /**
      * rotate point from rotated coordinate frame to world \f$ p^w = R_c^w p^c \f$
      */
-    Point2 rotate(const Point2& p, OptionalJacobian<2, 1> H1 = boost::none,
-        OptionalJacobian<2, 2> H2 = boost::none) const;
+    Point2 rotate(const Point2& p, OptionalJacobian<2, 1> H1 = {},
+        OptionalJacobian<2, 2> H2 = {}) const;
 
     /** syntactic sugar for rotate */
     inline Point2 operator*(const Point2& p) const {
@@ -170,8 +192,8 @@ namespace gtsam {
     /**
      * rotate point from world to rotated frame \f$ p^c = (R_c^w)^T p^w \f$
      */
-    Point2 unrotate(const Point2& p, OptionalJacobian<2, 1> H1 = boost::none,
-        OptionalJacobian<2, 2> H2 = boost::none) const;
+    Point2 unrotate(const Point2& p, OptionalJacobian<2, 1> H1 = {},
+        OptionalJacobian<2, 2> H2 = {}) const;
 
     /// @}
     /// @name Standard Interface
@@ -206,10 +228,18 @@ namespace gtsam {
     /** return 2*2 rotation matrix */
     Matrix2 matrix() const;
 
-    /** return 2*2 transpose (inverse) rotation matrix   */
+    /** return 2*2 transpose (inverse) rotation matrix */
     Matrix2 transpose() const;
 
-  private:
+    /** Find closest valid rotation matrix, given a 2x2 matrix */
+    static Rot2 ClosestTo(const Matrix2& M);
+
+    /** Vectorize the rotation matrix into a 4D vector */
+    Vector4 vec(OptionalJacobian<4, 1> H = {}) const;
+    /// @}
+
+    private:
+#if GTSAM_ENABLE_BOOST_SERIALIZATION
     /** Serialization function */
     friend class boost::serialization::access;
     template<class ARCHIVE>
@@ -217,13 +247,103 @@ namespace gtsam {
       ar & BOOST_SERIALIZATION_NVP(c_);
       ar & BOOST_SERIALIZATION_NVP(s_);
     }
+#endif
 
   };
 
-  template<>
-  struct traits<Rot2> : public internal::LieGroup<Rot2> {};
+template <>
+struct traits<Rot2> : public internal::MatrixLieGroup<Rot2, 2> {
+  /// Dimension of the D=1 QCQP vector [cos(theta), sin(theta)].
+  inline constexpr static int QcqpVectorDim = 2;
 
-  template<>
-  struct traits<const Rot2> : public internal::LieGroup<Rot2> {};
+  /**
+   * Return a matrix-valued QCQP variable for Rot2.
+   *
+   * D=1 uses the minimal representation [cos(theta), sin(theta)]', yielding a
+   * 2-by-1 matrix. The remaining matrix entries are recovered from the exact
+   * linear identities r01=-r10 and r11=r00.
+   * D>=2 returns [R', 0] as a 2-by-D row-orthonormal matrix. These matrix
+   * variables form a Stiefel relaxation with a common right-O(D) gauge.
+   */
+  template <int D = 1>
+  static Matrix QcqpValue(const Rot2& value) {
+    if constexpr (D == 1) {
+      return Vector2(value.c(), value.s());
+    } else if constexpr (D >= 2) {
+      Matrix X = Matrix::Zero(2, D);
+      X.leftCols<2>() = value.matrix().transpose();
+      return X;
+    } else {
+      throw std::invalid_argument(
+          "traits<Rot2>::QcqpValue requires D>=1.");
+    }
+  }
 
-} // gtsam
+  /**
+   * Return row-space QCQP equality constraints (A, a, b) with empty a, such
+   * that trace(x_i' A x_i) = b[j]. For D=1 this is the unit-circle constraint
+   * c^2+s^2=1. For D>=2 the same 2-by-2 constraints
+   * enforce row orthonormality. The matrix constraints enforce XX'=I, not
+   * determinant +1; square D=2 variables therefore admit both components of
+   * O(2).
+   */
+  template <int D = 1>
+  static std::vector<std::tuple<Matrix, Vector, double>> QcqpConstraints() {
+    if constexpr (D == 1) {
+      // c^2 + s^2 = 1 simultaneously enforces orthonormality and det(R)=1.
+      return {{Matrix::Identity(QcqpVectorDim, QcqpVectorDim), Vector(), 1.0}};
+    } else if constexpr (D >= 2) {
+      std::vector<std::tuple<Matrix, Vector, double>> constraints;
+      constraints.reserve(3);
+
+      Matrix A = Matrix::Zero(2, 2);
+      A(0, 0) = 1.0;
+      constraints.emplace_back(A, Vector(), 1.0);
+
+      A.setZero();
+      A(1, 1) = 1.0;
+      constraints.emplace_back(A, Vector(), 1.0);
+
+      A.setZero();
+      A(0, 1) = 0.5;
+      A(1, 0) = 0.5;
+      constraints.emplace_back(A, Vector(), 0.0);
+
+      return constraints;
+    } else {
+      throw std::invalid_argument(
+          "traits<Rot2>::QcqpConstraints only supports D=1 and D>=2.");
+    }
+  }
+
+  /**
+   * Project a D=1 minimal vector or canonical 2-by-D lift back to Rot2.
+   *
+   * Matrix-form QCQP solutions have a right-O(D) gauge, making this
+   * leading-block projection gauge-dependent unless the caller has first
+   * chosen a gauge. Matrix-form X must be exactly 2-by-D.
+   */
+  template <int D>
+  static Rot2 FromQcqpValue(const Matrix& X) {
+    if constexpr (D == 1) {
+      if (X.rows() != QcqpVectorDim || X.cols() != 1) {
+        throw std::invalid_argument(
+            "traits<Rot2>::FromQcqpValue requires a 2-by-1 vector.");
+      }
+      return Rot2::atan2(X(1, 0), X(0, 0));
+    } else {
+      static_assert(D >= 2,
+                    "traits<Rot2>::FromQcqpValue requires D >= 2.");
+      if (X.rows() != 2 || X.cols() != D) {
+        throw std::invalid_argument(
+            "traits<Rot2>::FromQcqpValue requires a 2-by-D matrix.");
+      }
+      return Rot2::ClosestTo(X.template leftCols<2>().transpose());
+    }
+  }
+};
+
+template <>
+struct traits<const Rot2> : public traits<Rot2> {};
+
+}  // namespace gtsam

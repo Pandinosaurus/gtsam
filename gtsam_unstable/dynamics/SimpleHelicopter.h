@@ -1,3 +1,18 @@
+/* ----------------------------------------------------------------------------
+
+ * GTSAM Copyright 2010, Georgia Tech Research Corporation,
+ * Atlanta, Georgia 30332-0415
+ * All Rights Reserved
+ * Authors: Frank Dellaert, et al. (see THANKS for the full author list)
+
+ * See LICENSE for the license information
+
+ * -------------------------------------------------------------------------- */
+
+/**
+ * @file SimpleHelicopter.h
+ */
+
 /*
  * @file SimpleHelicopter.h
  * @brief Implement SimpleHelicopter discrete dynamics model and variational integrator,
@@ -7,9 +22,16 @@
 
 #pragma once
 
-#include <gtsam/nonlinear/NonlinearFactor.h>
-#include <gtsam/geometry/Pose3.h>
+#include <gtsam/config.h>
+
+#ifdef GTSAM_ALLOW_DEPRECATED_SINCE_V43
+
+#include <gtsam/base/MatrixConstants.h>
 #include <gtsam/base/numericalDerivative.h>
+#include <gtsam/geometry/Pose3.h>
+#include <gtsam/nonlinear/NoiseModelFactorN.h>
+#include <gtsam/nonlinear/NonlinearFactor.h>
+
 #include <cmath>
 
 namespace gtsam {
@@ -23,12 +45,18 @@ namespace gtsam {
  * \f$ \xi_k \f$ as a variable. So it is a three-way factor.
  * Note: this factor is necessary if one needs to smooth the entire graph. It's not needed
  *  in sequential update method.
+ * @deprecated This experimental dynamics factor has no maintained replacement.
  */
-class Reconstruction : public NoiseModelFactor3<Pose3, Pose3, Vector6>  {
+class Reconstruction
+    : public NoiseModelFactorT<Vector6, Pose3, Pose3, Vector6> {
 
   double h_;  // time step
-  typedef NoiseModelFactor3<Pose3, Pose3, Vector6> Base;
+  typedef NoiseModelFactorT<Vector6, Pose3, Pose3, Vector6> Base;
 public:
+
+  // Provide access to the Matrix& version of evaluateError:
+  using Base::evaluateError;
+
   Reconstruction(Key gKey1, Key gKey, Key xiKey, double h, double mu = 1000.0) :
     Base(noiseModel::Constrained::All(6, std::abs(mu)), gKey1, gKey,
         xiKey), h_(h) {
@@ -37,14 +65,14 @@ public:
 
   /// @return a deep copy of this factor
   gtsam::NonlinearFactor::shared_ptr clone() const override {
-    return boost::static_pointer_cast<gtsam::NonlinearFactor>(
+    return std::static_pointer_cast<gtsam::NonlinearFactor>(
         gtsam::NonlinearFactor::shared_ptr(new Reconstruction(*this))); }
 
-  /** \f$ log((g_k\exp(h\xi_k))^{-1}g_{k+1}) = 0, with optional derivatives */
-  Vector evaluateError(const Pose3& gk1, const Pose3& gk, const Vector6& xik,
-      boost::optional<Matrix&> H1 = boost::none,
-      boost::optional<Matrix&> H2 = boost::none,
-      boost::optional<Matrix&> H3 = boost::none) const override {
+  /** \f$ log((g_k\exp(h\xi_k))^{-1}g_{k+1}) = 0 \f$, with optional derivatives */
+  Vector6 evaluateError(const Pose3& gk1, const Pose3& gk,
+                        const Vector6& xik, OptionalMatrixType H1,
+                        OptionalMatrixType H2,
+                        OptionalMatrixType H3) const override {
 
     Matrix6 D_exphxi_xi;
     Pose3 exphxi = Pose3::Expmap(h_ * xik, H3 ? &D_exphxi_xi : 0);
@@ -72,8 +100,10 @@ public:
 
 /**
  * Implement the Discrete Euler-Poincare' equation:
+ * @deprecated This experimental dynamics factor has no maintained replacement.
  */
-class DiscreteEulerPoincareHelicopter : public NoiseModelFactor3<Vector6, Vector6, Pose3>  {
+class DiscreteEulerPoincareHelicopter
+    : public NoiseModelFactorT<Vector6, Vector6, Vector6, Pose3> {
 
   double h_;  /// time step
   Matrix Inertia_;  /// Inertia tensors Inertia = [ J 0; 0 M ]
@@ -86,9 +116,13 @@ class DiscreteEulerPoincareHelicopter : public NoiseModelFactor3<Vector6, Vector
   // This might be needed in control or system identification problems.
   // We treat them as constant here, since the control inputs are to specify.
 
-  typedef NoiseModelFactor3<Vector6, Vector6, Pose3> Base;
+  typedef NoiseModelFactorT<Vector6, Vector6, Vector6, Pose3> Base;
 
 public:
+
+  // Provide access to the Matrix& version of evaluateError:
+  using Base::evaluateError;
+
   DiscreteEulerPoincareHelicopter(Key xiKey1, Key xiKey_1, Key gKey,
       double h, const Matrix& Inertia, const Vector& Fu, double m,
       double mu = 1000.0) :
@@ -99,7 +133,7 @@ public:
 
   /// @return a deep copy of this factor
   gtsam::NonlinearFactor::shared_ptr clone() const override {
-    return boost::static_pointer_cast<gtsam::NonlinearFactor>(
+    return std::static_pointer_cast<gtsam::NonlinearFactor>(
         gtsam::NonlinearFactor::shared_ptr(new DiscreteEulerPoincareHelicopter(*this))); }
 
   /** DEP, with optional derivatives
@@ -107,16 +141,16 @@ public:
    * where pk = CT_TLN(h*xi_k)*Inertia*xi_k
    *       pk_1 = CT_TLN(-h*xi_k_1)*Inertia*xi_k_1
    * */
-  Vector evaluateError(const Vector6& xik, const Vector6& xik_1, const Pose3& gk,
-      boost::optional<Matrix&> H1 = boost::none,
-      boost::optional<Matrix&> H2 = boost::none,
-      boost::optional<Matrix&> H3 = boost::none) const override {
+  Vector6 evaluateError(const Vector6& xik, const Vector6& xik_1,
+                        const Pose3& gk, OptionalMatrixType H1,
+                        OptionalMatrixType H2,
+                        OptionalMatrixType H3) const override {
 
     Vector muk = Inertia_*xik;
     Vector muk_1 = Inertia_*xik_1;
 
-    // Apply the inverse right-trivialized tangent (derivative) map of the exponential map,
-    // using the trapezoidal Lie-Newmark (TLN) scheme, to a vector.
+    // Apply the transpose of a first-order inverse left Jacobian using the
+    // trapezoidal Lie-Newmark (TLN) scheme.
     // TLN is just a first order approximation of the dExpInv_exp above, detailed in [Kobilarov09siggraph]
     // C_TLN formula: I6 - 1/2 ad[xi].
     Matrix D_adjThxik_muk, D_adjThxik1_muk1;
@@ -124,8 +158,9 @@ public:
     Vector pk_1 = muk_1 - 0.5*Pose3::adjointTranspose(-h_*xik_1, muk_1, D_adjThxik1_muk1);
 
     Matrix D_gravityBody_gk;
-    Point3 gravityBody = gk.rotation().unrotate(Point3(0.0, 0.0, -9.81*m_), D_gravityBody_gk, boost::none);
-    Vector f_ext = (Vector(6) << 0.0, 0.0, 0.0, gravityBody.x(), gravityBody.y(), gravityBody.z()).finished();
+    Point3 gravityBody = gk.rotation().unrotate(Point3(0.0, 0.0, -9.81*m_), D_gravityBody_gk, {});
+    Vector f_ext{
+        {0.0, 0.0, 0.0, gravityBody.x(), gravityBody.y(), gravityBody.z()}};
 
     Vector hx = pk - pk_1 - h_*Fu_ - h_*f_ext;
 
@@ -141,7 +176,7 @@ public:
 
     if (H3) {
       *H3 = Z_6x6;
-      insertSub(*H3, -h_*D_gravityBody_gk, 3, 0);
+      H3->block<3, 3>(3, 0) = -h_ * D_gravityBody_gk;
     }
 
     return hx;
@@ -161,9 +196,8 @@ public:
   }
 
   Vector evaluateError(const Vector6& xik, const Vector6& xik_1, const Pose3& gk,
-      boost::optional<Matrix&> H1 = boost::none,
-      boost::optional<Matrix&> H2 = boost::none,
-      boost::optional<Matrix&> H3 = boost::none) const {
+      OptionalMatrixType H1, OptionalMatrixType H2,
+      OptionalMatrixType H3) const {
     if (H1) {
       (*H1) = numericalDerivative31(
           std::function<Vector(const Vector6&, const Vector6&, const Pose3&)>(
@@ -195,5 +229,6 @@ public:
 
 };
 
+}  // namespace gtsam
 
-} /* namespace gtsam */
+#endif  // GTSAM_ALLOW_DEPRECATED_SINCE_V43

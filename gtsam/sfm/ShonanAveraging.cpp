@@ -14,26 +14,35 @@
  * @date   March 2019 - August 2020
  * @author Frank Dellaert, David Rosen, and Jing Wu
  * @brief  Shonan Averaging algorithm
+ * @author Fan Jiang
  */
 
-#include <SymEigsSolver.h>
-#include <cmath>
+// GCC bug workaround
+#if  defined(__GNUC__) && __GNUC__ == 16
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+#endif
+
+#include <Spectra/SymEigsSolver.h>
+#include <Spectra/Util/SimpleRandom.h>
+#include <gtsam/linear/AcceleratedPowerMethod.h>
 #include <gtsam/linear/PCGSolver.h>
+#include <gtsam/linear/PowerMethod.h>
 #include <gtsam/linear/SubgraphPreconditioner.h>
 #include <gtsam/nonlinear/LevenbergMarquardtOptimizer.h>
-#include <gtsam/nonlinear/NonlinearEquality.h>
+#include <gtsam/constrained/NonlinearEquality.h>
 #include <gtsam/nonlinear/NonlinearFactorGraph.h>
 #include <gtsam/sfm/ShonanAveraging.h>
 #include <gtsam/sfm/ShonanFactor.h>
 #include <gtsam/sfm/ShonanGaugeFactor.h>
+#include <gtsam/slam/BetweenFactor.h>
+#include <gtsam/slam/FastSync.h>
 #include <gtsam/slam/FrobeniusFactor.h>
 #include <gtsam/slam/KarcherMeanFactor-inl.h>
 
 #include <Eigen/Eigenvalues>
 #include <algorithm>
-#include <complex>
-#include <iostream>
-#include <map>
+#include <cassert>
+#include <cmath>
 #include <random>
 #include <set>
 #include <vector>
@@ -41,7 +50,7 @@
 namespace gtsam {
 
 // In Wrappers we have no access to this so have a default ready
-static std::mt19937 kRandomNumberGenerator(42);
+static std::mt19937 kPRNG(42);
 
 using Sparse = Eigen::SparseMatrix<double>;
 
@@ -67,20 +76,15 @@ ShonanAveragingParameters<d>::ShonanAveragingParameters(
   builderParameters.augmentationWeight = SubgraphBuilderParameters::SKELETON;
   builderParameters.augmentationFactor = 0.0;
 
-  auto pcg = boost::make_shared<PCGSolverParameters>();
-
   // Choose optimization method
   if (method == "SUBGRAPH") {
     lm.iterativeParams =
-        boost::make_shared<SubgraphSolverParameters>(builderParameters);
+        std::make_shared<SubgraphSolverParameters>(builderParameters);
   } else if (method == "SGPC") {
-    pcg->preconditioner_ =
-        boost::make_shared<SubgraphPreconditionerParameters>(builderParameters);
-    lm.iterativeParams = pcg;
+    lm.iterativeParams = std::make_shared<PCGSolverParameters>(
+        std::make_shared<SubgraphPreconditionerParameters>(builderParameters));
   } else if (method == "JACOBI") {
-    pcg->preconditioner_ =
-        boost::make_shared<BlockJacobiPreconditionerParameters>();
-    lm.iterativeParams = pcg;
+    lm.iterativeParams = std::make_shared<PCGSolverParameters>(std::make_shared<BlockJacobiPreconditionerParameters>());
   } else if (method == "QR") {
     lm.setLinearSolverType("MULTIFRONTAL_QR");
   } else if (method == "CHOLESKY") {
@@ -102,7 +106,7 @@ template <size_t d>
 static size_t NrUnknowns(
     const typename ShonanAveraging<d>::Measurements &measurements) {
   Key maxKey = 0;
-  std::set<Key> keys;
+  KeySet keys;
   for (const auto &measurement : measurements) {
     for (const Key &key : measurement.keys()) {
       maxKey = std::max(key, maxKey);
@@ -140,9 +144,31 @@ ShonanAveraging<d>::ShonanAveraging(const Measurements &measurements,
 
 /* ************************************************************************* */
 template <size_t d>
+NonlinearFactorGraph ShonanAveraging<d>::buildFastSyncGraph() const {
+  NonlinearFactorGraph graph;
+  for (const auto &measurement : measurements_) {
+    SharedNoiseModel model = measurement.noiseModel();
+    if (const auto robust =
+            std::dynamic_pointer_cast<noiseModel::Robust>(model)) {
+      model = robust->noise();
+    }
+    graph.emplace_shared<BetweenFactor<Rot>>(
+        measurement.key1(), measurement.key2(), measurement.measured(), model);
+  }
+
+  if (parameters_.alpha > 0) {
+    const auto &[key, value] = parameters_.anchor;
+    graph.emplace_shared<PriorFactor<Rot>>(
+        key, value, noiseModel::Unit::Create(SO<d>::dimension));
+  }
+  return graph;
+}
+
+/* ************************************************************************* */
+template <size_t d>
 NonlinearFactorGraph ShonanAveraging<d>::buildGraphAt(size_t p) const {
   NonlinearFactorGraph graph;
-  auto G = boost::make_shared<Matrix>(SO<-1>::VectorizedGenerators(p));
+  auto G = std::make_shared<Matrix>(SO<-1>::VectorizedGenerators(p));
 
   for (const auto &measurement : measurements_) {
     const auto &keys = measurement.keys();
@@ -172,24 +198,32 @@ double ShonanAveraging<d>::costAt(size_t p, const Values &values) const {
 
 /* ************************************************************************* */
 template <size_t d>
-boost::shared_ptr<LevenbergMarquardtOptimizer>
+std::shared_ptr<LevenbergMarquardtOptimizer>
 ShonanAveraging<d>::createOptimizerAt(size_t p, const Values &initial) const {
+  return createOptimizerAt(p, initial, std::nullopt);
+}
+
+/* ************************************************************************* */
+template <size_t d>
+std::shared_ptr<LevenbergMarquardtOptimizer>
+ShonanAveraging<d>::createOptimizerAt(
+    size_t p, const Values &initial,
+    const std::optional<Ordering> &ordering) const {
   // Build graph
   NonlinearFactorGraph graph = buildGraphAt(p);
 
   // Anchor prior is added here as depends on initial value (and cost is zero)
   if (parameters_.alpha > 0) {
-    size_t i;
-    Rot value;
     const size_t dim = SOn::Dimension(p);
-    std::tie(i, value) = parameters_.anchor;
+    const auto [i, value] = parameters_.anchor;
     auto model = noiseModel::Isotropic::Precision(dim, parameters_.alpha);
     graph.emplace_shared<PriorFactor<SOn>>(i, SOn::Lift(p, value.matrix()),
                                            model);
   }
   // Optimize
-  return boost::make_shared<LevenbergMarquardtOptimizer>(graph, initial,
-                                                         parameters_.lm);
+  LevenbergMarquardtParams lm = parameters_.lm;
+  if (ordering && lm.requiresOrdering()) lm.setOrdering(*ordering);
+  return std::make_shared<LevenbergMarquardtOptimizer>(graph, initial, lm);
 }
 
 /* ************************************************************************* */
@@ -207,9 +241,9 @@ Matrix ShonanAveraging<d>::StiefelElementMatrix(const Values &values) {
   const size_t N = values.size();
   const size_t p = values.at<SOn>(0).rows();
   Matrix S(p, N * d);
-  for (const auto it : values.filter<SOn>()) {
-    S.middleCols<d>(it.key * d) =
-        it.value.matrix().leftCols<d>();  // project Qj to Stiefel
+  for (const auto& it : values.extract<SOn>()) {
+    S.middleCols<d>(it.first * d) =
+        it.second.matrix().leftCols<d>();  // project Qj to Stiefel
   }
   return S;
 }
@@ -218,11 +252,11 @@ Matrix ShonanAveraging<d>::StiefelElementMatrix(const Values &values) {
 template <>
 Values ShonanAveraging<2>::projectFrom(size_t p, const Values &values) const {
   Values result;
-  for (const auto it : values.filter<SOn>()) {
-    assert(it.value.rows() == p);
-    const auto &M = it.value.matrix();
+  for (const auto& it : values.extract<SOn>()) {
+    assert(it.second.rows() == p);
+    const auto &M = it.second.matrix();
     const Rot2 R = Rot2::atan2(M(1, 0), M(0, 0));
-    result.insert(it.key, R);
+    result.insert(it.first, R);
   }
   return result;
 }
@@ -230,11 +264,11 @@ Values ShonanAveraging<2>::projectFrom(size_t p, const Values &values) const {
 template <>
 Values ShonanAveraging<3>::projectFrom(size_t p, const Values &values) const {
   Values result;
-  for (const auto it : values.filter<SOn>()) {
-    assert(it.value.rows() == p);
-    const auto &M = it.value.matrix();
+  for (const auto& it : values.extract<SOn>()) {
+    assert(it.second.rows() == p);
+    const auto &M = it.second.matrix();
     const Rot3 R = Rot3::ClosestTo(M.topLeftCorner<3, 3>());
-    result.insert(it.key, R);
+    result.insert(it.first, R);
   }
   return result;
 }
@@ -326,8 +360,8 @@ double ShonanAveraging<d>::cost(const Values &values) const {
   }
   // Finally, project each dxd rotation block to SO(d)
   Values result;
-  for (const auto it : values.filter<Rot>()) {
-    result.insert(it.key, SO<d>(it.value.matrix()));
+  for (const auto& it : values.extract<Rot>()) {
+    result.insert(it.first, SO<d>(it.second.matrix()));
   }
   return graph.error(result);
 }
@@ -337,13 +371,13 @@ double ShonanAveraging<d>::cost(const Values &values) const {
 template <typename T, size_t d>
 static double Kappa(const BinaryMeasurement<T> &measurement,
                     const ShonanAveragingParameters<d> &parameters) {
-  const auto &isotropic = boost::dynamic_pointer_cast<noiseModel::Isotropic>(
+  const auto &isotropic = std::dynamic_pointer_cast<noiseModel::Isotropic>(
       measurement.noiseModel());
   double sigma;
   if (isotropic) {
     sigma = isotropic->sigma();
   } else {
-    const auto &robust = boost::dynamic_pointer_cast<noiseModel::Robust>(
+    const auto &robust = std::dynamic_pointer_cast<noiseModel::Robust>(
         measurement.noiseModel());
     // Check if noise model is robust
     if (robust) {
@@ -450,8 +484,8 @@ Sparse ShonanAveraging<d>::computeLambda(const Matrix &S) const {
   std::vector<Eigen::Triplet<double>> triplets;
   triplets.reserve(stride * N);
 
-  // Do sparse-dense multiply to get Q*S'
-  auto QSt = Q_ * S.transpose();
+  // Materialize Q*S' once before extracting a block for each pose.
+  const Matrix QSt = Q_ * S.transpose();
 
   for (size_t j = 0; j < N; j++) {
     // Compute B, the building block for the j^th diagonal block of Lambda
@@ -554,7 +588,7 @@ static bool PowerMinimumEigenValue(
   }
 
   const Sparse C = pmEigenValue * Matrix::Identity(A.rows(), A.cols()).sparseView() - A;
-  const boost::optional<Vector> initial = perturb(S.row(0));
+  const std::optional<Vector> initial = perturb(S.row(0));
   AcceleratedPowerMethod<Sparse> apmShiftedOperator(C, initial);
 
   const bool minConverged = apmShiftedOperator.compute(
@@ -576,6 +610,8 @@ static bool PowerMinimumEigenValue(
  * nontrivial function, perform_op(x,y), that computes and returns the product
  * y = (A + sigma*I) x */
 struct MatrixProdFunctor {
+  using Scalar = double;
+
   // Const reference to an externally-held matrix whose minimum-eigenvalue we
   // want to compute
   const Sparse &A_;
@@ -632,17 +668,17 @@ static bool SparseMinimumEigenValue(
     const Sparse &A, const Matrix &S, double *minEigenValue,
     Vector *minEigenVector = 0, size_t *numIterations = 0,
     size_t maxIterations = 1000,
-    double minEigenvalueNonnegativityTolerance = 10e-4,
+    double minEigenvalueNonnegativityTolerance = 1e-4,
     Eigen::Index numLanczosVectors = 20) {
   // a. Estimate the largest-magnitude eigenvalue of this matrix using Lanczos
   MatrixProdFunctor lmOperator(A);
-  Spectra::SymEigsSolver<double, Spectra::SELECT_EIGENVALUE::LARGEST_MAGN,
-                         MatrixProdFunctor>
-      lmEigenValueSolver(&lmOperator, 1, std::min(numLanczosVectors, A.rows()));
+  Spectra::SymEigsSolver<MatrixProdFunctor> lmEigenValueSolver(
+      lmOperator, 1, std::min(numLanczosVectors, A.rows()));
   lmEigenValueSolver.init();
 
-  const int lmConverged = lmEigenValueSolver.compute(
-      maxIterations, 1e-4, Spectra::SELECT_EIGENVALUE::LARGEST_MAGN);
+  const int lmConverged =
+      lmEigenValueSolver.compute(Spectra::SortRule::LargestMagn, maxIterations,
+                                 1e-4, Spectra::SortRule::LargestMagn);
 
   // Check convergence and bail out if necessary
   if (lmConverged != 1) return false;
@@ -670,10 +706,8 @@ static bool SparseMinimumEigenValue(
 
   MatrixProdFunctor minShiftedOperator(A, -2 * lmEigenValue);
 
-  Spectra::SymEigsSolver<double, Spectra::SELECT_EIGENVALUE::LARGEST_MAGN,
-                         MatrixProdFunctor>
-      minEigenValueSolver(&minShiftedOperator, 1,
-                          std::min(numLanczosVectors, A.rows()));
+  Spectra::SymEigsSolver<MatrixProdFunctor> minEigenValueSolver(
+      minShiftedOperator, 1, std::min(numLanczosVectors, A.rows()));
 
   // If S is a critical point of F, then S^T is also in the null space of S -
   // Lambda(S) (cf. Lemma 6 of the tech report), and therefore its rows are
@@ -689,8 +723,8 @@ static bool SparseMinimumEigenValue(
   // simultaneously allowing the iterations to escape from this fixed point in
   // the case that the relaxation is not exact.
   Vector v0 = S.row(0).transpose();
-  Vector perturbation(v0.size());
-  perturbation.setRandom();
+  Spectra::SimpleRandom<double> rng(0);
+  Vector perturbation = rng.random_vec(v0.size());
   perturbation.normalize();
   Vector xinit = v0 + (.03 * v0.norm()) * perturbation;  // Perturb v0 by ~3%
 
@@ -701,8 +735,9 @@ static bool SparseMinimumEigenValue(
   // order to be able to estimate the smallest eigenvalue within an *absolute*
   // tolerance of 'minEigenvalueNonnegativityTolerance'
   const int minConverged = minEigenValueSolver.compute(
-      maxIterations, minEigenvalueNonnegativityTolerance / lmEigenValue,
-      Spectra::SELECT_EIGENVALUE::LARGEST_MAGN);
+      Spectra::SortRule::LargestMagn, maxIterations,
+      minEigenvalueNonnegativityTolerance / lmEigenValue,
+      Spectra::SortRule::LargestMagn);
 
   if (minConverged != 1) return false;
 
@@ -755,7 +790,7 @@ std::pair<double, Vector> ShonanAveraging<d>::computeMinEigenVector(
     const Values &values) const {
   Vector minEigenVector;
   double minEigenValue = computeMinEigenValue(values, &minEigenVector);
-  return std::make_pair(minEigenValue, minEigenVector);
+  return {minEigenValue, minEigenVector};
 }
 
 /* ************************************************************************* */
@@ -832,8 +867,8 @@ Values ShonanAveraging<d>::initializeWithDescent(
   double alphaMin = 1e-2;
   double alpha =
       std::max(1024 * alphaMin, 10 * gradienTolerance / fabs(minEigenValue));
-  vector<double> alphas;
-  vector<double> fvals;
+  std::vector<double> alphas;
+  std::vector<double> fvals;
   // line search
   while ((alpha >= alphaMin)) {
     Values Qplus = LiftwithDescent(p, values, alpha * minEigenVector);
@@ -874,7 +909,7 @@ Values ShonanAveraging<d>::initializeRandomly(std::mt19937 &rng) const {
 /* ************************************************************************* */
 template <size_t d>
 Values ShonanAveraging<d>::initializeRandomly() const {
-  return initializeRandomly(kRandomNumberGenerator);
+  return initializeRandomly(kPRNG);
 }
 
 /* ************************************************************************* */
@@ -888,27 +923,72 @@ Values ShonanAveraging<d>::initializeRandomlyAt(size_t p,
 /* ************************************************************************* */
 template <size_t d>
 Values ShonanAveraging<d>::initializeRandomlyAt(size_t p) const {
-  return initializeRandomlyAt(p, kRandomNumberGenerator);
+  return initializeRandomlyAt(p, kPRNG);
 }
 
 /* ************************************************************************* */
 template <size_t d>
-std::pair<Values, double> ShonanAveraging<d>::run(const Values &initialEstimate,
-                                                  size_t pMin,
-                                                  size_t pMax) const {
+std::pair<Values, double> ShonanAveraging<d>::run(const Values &initial,
+                                                  size_t min_p,
+                                                  size_t max_p) const {
+  if (min_p < d) {
+    throw std::runtime_error("min_p is smaller than the base dimension d");
+  }
+  if (max_p < min_p) {
+    throw std::runtime_error("max_p is smaller than min_p");
+  }
+
+  std::optional<Ordering> ordering = parameters_.lm.ordering;
+  if (!ordering && parameters_.lm.requiresOrdering()) {
+    ordering = Ordering::Create(parameters_.lm.orderingType,
+                                buildGraphAt(min_p));
+  }
+  return run(initial, min_p, max_p, ordering);
+}
+
+/* ************************************************************************* */
+template <size_t d>
+std::pair<Values, double> ShonanAveraging<d>::run(
+    size_t min_p, size_t max_p) const {
+  if (min_p < d) {
+    throw std::runtime_error("min_p is smaller than the base dimension d");
+  }
+  if (max_p < min_p) {
+    throw std::runtime_error("max_p is smaller than min_p");
+  }
+
+  const NonlinearFactorGraph graph = buildFastSyncGraph();
+  const Ordering ordering =
+      parameters_.lm.ordering ? *parameters_.lm.ordering
+                              : Ordering::Create(Ordering::METIS, graph);
+  const Values initial = fastSync<Rot>(graph, ordering);
+  const std::optional<Ordering> lmOrdering =
+      parameters_.lm.requiresOrdering() ? std::optional<Ordering>(ordering)
+                                        : std::nullopt;
+  return run(initial, min_p, max_p, lmOrdering);
+}
+
+/* ************************************************************************* */
+template <size_t d>
+std::pair<Values, double> ShonanAveraging<d>::run(
+    const Values &initial, size_t min_p, size_t max_p,
+    const std::optional<Ordering> &ordering) const {
+  if (min_p < d) {
+    throw std::runtime_error("min_p is smaller than the base dimension d");
+  }
   Values Qstar;
-  Values initialSOp = LiftTo<Rot>(pMin, initialEstimate);  // lift to pMin!
-  for (size_t p = pMin; p <= pMax; p++) {
+  Values initialSOp = LiftTo<Rot>(min_p, initial);  // lift to min_p!
+  for (size_t p = min_p; p <= max_p; p++) {
     // Optimize until convergence at this level
-    Qstar = tryOptimizingAt(p, initialSOp);
+    Qstar = createOptimizerAt(p, initialSOp, ordering)->optimize();
     if (parameters_.getUseHuber() || !parameters_.getCertifyOptimality()) {
       // in this case, there is no optimality certification
-      if (pMin != pMax) {
+      if (min_p != max_p) {
         throw std::runtime_error(
-            "When using robust norm, Shonan only tests a single rank. Set pMin = pMax");
+            "When using robust norm, Shonan only tests a single rank. Set min_p = max_p");
       }
       const Values SO3Values = roundSolution(Qstar);
-      return std::make_pair(SO3Values, 0);
+      return {SO3Values, 0};
     } else {
       // Check certificate of global optimality
       Vector minEigenVector;
@@ -916,18 +996,18 @@ std::pair<Values, double> ShonanAveraging<d>::run(const Values &initialEstimate,
       if (minEigenValue > parameters_.optimalityThreshold) {
         // If at global optimum, round and return solution
         const Values SO3Values = roundSolution(Qstar);
-        return std::make_pair(SO3Values, minEigenValue);
+        return {SO3Values, minEigenValue};
       }
 
-      // Not at global optimimum yet, so check whether we will go to next level
-      if (p != pMax) {
+      // Not at global optimum yet, so check whether we will go to next level
+      if (p != max_p) {
         // Calculate initial estimate for next level by following minEigenVector
         initialSOp =
             initializeWithDescent(p + 1, Qstar, minEigenVector, minEigenValue);
       }
     }
   }
-  throw std::runtime_error("Shonan::run did not converge for given pMax");
+  throw std::runtime_error("Shonan::run did not converge for given max_p");
 }
 
 /* ************************************************************************* */
@@ -939,7 +1019,7 @@ ShonanAveraging2::ShonanAveraging2(const Measurements &measurements,
     : ShonanAveraging<2>(maybeRobust(measurements, parameters.getUseHuber()),
                          parameters) {}
 
-ShonanAveraging2::ShonanAveraging2(string g2oFile, const Parameters &parameters)
+ShonanAveraging2::ShonanAveraging2(std::string g2oFile, const Parameters &parameters)
     : ShonanAveraging<2>(maybeRobust(parseMeasurements<Rot2>(g2oFile),
                                      parameters.getUseHuber()),
                          parameters) {}
@@ -949,7 +1029,7 @@ ShonanAveraging2::ShonanAveraging2(string g2oFile, const Parameters &parameters)
 static BinaryMeasurement<Rot2> convertPose2ToBinaryMeasurementRot2(
     const BetweenFactor<Pose2>::shared_ptr &f) {
   auto gaussian =
-      boost::dynamic_pointer_cast<noiseModel::Gaussian>(f->noiseModel());
+      std::dynamic_pointer_cast<noiseModel::Gaussian>(f->noiseModel());
   if (!gaussian)
     throw std::invalid_argument(
         "parseMeasurements<Rot2> can only convert Pose2 measurements "
@@ -958,7 +1038,7 @@ static BinaryMeasurement<Rot2> convertPose2ToBinaryMeasurementRot2(
   // the (2,2) entry of Pose2's covariance corresponds to Rot2's covariance
   // because the tangent space of Pose2 is ordered as (vx, vy, w)
   auto model = noiseModel::Isotropic::Variance(1, M(2, 2));
-  return BinaryMeasurement<Rot2>(f->key1(), f->key2(), f->measured().rotation(),
+  return BinaryMeasurement<Rot2>(f->key<1>(), f->key<2>(), f->measured().rotation(),
                                  model);
 }
     
@@ -985,7 +1065,7 @@ ShonanAveraging3::ShonanAveraging3(const Measurements &measurements,
     : ShonanAveraging<3>(maybeRobust(measurements, parameters.getUseHuber()),
                          parameters) {}
 
-ShonanAveraging3::ShonanAveraging3(string g2oFile, const Parameters &parameters)
+ShonanAveraging3::ShonanAveraging3(std::string g2oFile, const Parameters &parameters)
     : ShonanAveraging<3>(maybeRobust(parseMeasurements<Rot3>(g2oFile),
                                      parameters.getUseHuber()),
                          parameters) {}
@@ -997,7 +1077,7 @@ ShonanAveraging3::ShonanAveraging3(string g2oFile, const Parameters &parameters)
 static BinaryMeasurement<Rot3> convert(
     const BetweenFactor<Pose3>::shared_ptr &f) {
   auto gaussian =
-      boost::dynamic_pointer_cast<noiseModel::Gaussian>(f->noiseModel());
+      std::dynamic_pointer_cast<noiseModel::Gaussian>(f->noiseModel());
   if (!gaussian)
     throw std::invalid_argument(
         "parseMeasurements<Rot3> can only convert Pose3 measurements "
@@ -1006,7 +1086,7 @@ static BinaryMeasurement<Rot3> convert(
   // the upper-left 3x3 sub-block of Pose3's covariance corresponds to Rot3's covariance
   // because the tangent space of Pose3 is ordered as (w,T) where w and T are both Vector3's
   auto model = noiseModel::Gaussian::Covariance(M.block<3, 3>(0, 0));
-  return BinaryMeasurement<Rot3>(f->key1(), f->key2(), f->measured().rotation(),
+  return BinaryMeasurement<Rot3>(f->key<1>(), f->key<2>(), f->measured().rotation(),
                                  model);
 }
 

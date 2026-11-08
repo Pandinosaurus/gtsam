@@ -1,5 +1,3 @@
-{include_boost}
-
 #include <pybind11/eigen.h>
 #include <pybind11/stl_bind.h>
 #include <pybind11/pybind11.h>
@@ -7,23 +5,26 @@
 #include "gtsam/nonlinear/utilities.h"  // for RedirectCout.
 
 {includes}
-#include "wrap/serialization.h"
-#include <boost/serialization/export.hpp>
 
 {boost_class_export}
-
-{holder_type}
 
 using namespace std;
 
 namespace py = pybind11;
 
-PYBIND11_MODULE({module_name}, m_) {{
-    m_.doc() = "pybind11 wrapper of {module_name}";
+{submodules}
 
-{wrapped_namespace}
-
-#include "python/specializations.h"
-
+{declaration_module_def} {{
+{wrapped_declarations}
 }}
 
+{binding_module_def} {{
+#include "python/specializations.h"
+{wrapped_bindings}
+}}
+
+{module_def} {{
+    m_.doc() = "pybind11 wrapper of {module_name}";
+
+{module_init}
+}}

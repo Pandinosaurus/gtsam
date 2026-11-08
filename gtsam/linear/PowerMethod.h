@@ -26,6 +26,7 @@
 #include <Eigen/Sparse>
 #include <random>
 #include <vector>
+#include <optional>
 
 namespace gtsam {
 
@@ -75,10 +76,10 @@ class PowerMethod {
 
   /// Construct from the aim matrix and intial ritz vector
   explicit PowerMethod(const Operator &A,
-                       const boost::optional<Vector> initial = boost::none)
+                       const std::optional<Vector> initial = {})
       : A_(A), dim_(A.rows()), nrIterations_(0) {
     Vector x0;
-    x0 = initial ? initial.get() : Vector::Random(dim_);
+    x0 = initial ? *initial : Vector::Random(dim_);
     x0.normalize();
 
     // initialize Ritz eigen value
@@ -129,14 +130,21 @@ class PowerMethod {
   bool compute(size_t maxIterations, double tol) {
     // Starting
     bool isConverged = false;
+    if (maxIterations == 0) return isConverged;
+
+    Vector product = A_ * ritzVector_;
 
     for (size_t i = 0; i < maxIterations && !isConverged; i++) {
       ++nrIterations_;
       // update the ritzVector after power iteration
-      ritzVector_ = powerIteration();
-      // update the ritzValue 
-      ritzValue_ = ritzVector_.dot(A_ * ritzVector_);
-      isConverged = converged(tol);
+      ritzVector_ = product;
+      ritzVector_.normalize();
+
+      // Reuse this product for the Ritz value, residual, and next iteration.
+      product = A_ * ritzVector_;
+      ritzValue_ = ritzVector_.dot(product);
+      const double error = (product - ritzValue_ * ritzVector_).norm();
+      isConverged = error < tol;
     }
 
     return isConverged;

@@ -1,3 +1,14 @@
+/* ----------------------------------------------------------------------------
+
+ * GTSAM Copyright 2010, Georgia Tech Research Corporation,
+ * Atlanta, Georgia 30332-0415
+ * All Rights Reserved
+ * Authors: Frank Dellaert, et al. (see THANKS for the full author list)
+
+ * See LICENSE for the license information
+
+ * -------------------------------------------------------------------------- */
+
 /*
  * OrientedPlane3Factor.cpp
  *
@@ -7,6 +18,8 @@
 
 #include "OrientedPlane3Factor.h"
 
+#include <gtsam/base/VectorConstants.h>
+
 using namespace std;
 
 namespace gtsam {
@@ -15,16 +28,17 @@ namespace gtsam {
 void OrientedPlane3Factor::print(const string& s,
     const KeyFormatter& keyFormatter) const {
   cout << s << (s == "" ? "" : "\n");
-  cout << "OrientedPlane3Factor Factor (" << keyFormatter(key1()) << ", "
-       << keyFormatter(key2()) << ")\n";
+  cout << "OrientedPlane3Factor Factor (" << keyFormatter(key<1>()) << ", "
+       << keyFormatter(key<2>()) << ")\n";
   measured_p_.print("Measured Plane");
   this->noiseModel_->print("  noise model: ");
 }
 
 //***************************************************************************
-Vector OrientedPlane3Factor::evaluateError(const Pose3& pose,
-    const OrientedPlane3& plane, boost::optional<Matrix&> H1,
-    boost::optional<Matrix&> H2) const {
+Vector3 OrientedPlane3Factor::evaluateError(const Pose3& pose,
+                                            const OrientedPlane3& plane,
+                                            OptionalMatrixType H1,
+                                            OptionalMatrixType H2) const {
   Matrix36 predicted_H_pose;
   Matrix33 predicted_H_plane, error_H_predicted;
 
@@ -64,11 +78,11 @@ bool OrientedPlane3DirectionPrior::equals(const NonlinearFactor& expected,
 
 //***************************************************************************
 Vector OrientedPlane3DirectionPrior::evaluateError(
-    const OrientedPlane3& plane, boost::optional<Matrix&> H) const {
+    const OrientedPlane3& plane, OptionalMatrixType H) const {
   Unit3 n_hat_p = measured_p_.normal();
   Unit3 n_hat_q = plane.normal();
   Matrix2 H_p;
-  Vector e = n_hat_p.error(n_hat_q, H ? &H_p : nullptr);
+  Vector e = n_hat_p.errorVector(n_hat_q, {}, H ? &H_p : nullptr);
   if (H) {
     H->resize(2, 3);
     *H << H_p, Z_2x1;

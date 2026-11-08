@@ -50,7 +50,7 @@ public:
    *  @param p    Parameters, typically fixed in a single application
    *  @param bias Current estimate of acceleration and rotation rate biases
    */
-  TangentPreintegration(const boost::shared_ptr<Params>& p,
+  TangentPreintegration(const std::shared_ptr<Params>& p,
       const imuBias::ConstantBias& biasHat = imuBias::ConstantBias());
 
   /// Virtual destructor
@@ -71,7 +71,10 @@ public:
   Vector3  deltaPij() const override { return preintegrated_.segment<3>(3); }
   Vector3  deltaVij() const override { return preintegrated_.tail<3>(); }
   Rot3     deltaRij() const override { return Rot3::Expmap(theta()); }
-  NavState deltaXij() const override { return NavState().retract(preintegrated_); }
+  Vector3 so3TangentAt(double t) const override;
+  NavState deltaXij() const override {
+    return internal::navStateComponentWiseRetract(NavState(), preintegrated_);
+  }
 
   const Vector9& preintegrated() const { return preintegrated_; }
   Vector3 theta() const     { return preintegrated_.head<3>(); }
@@ -91,9 +94,9 @@ public:
   static Vector9 UpdatePreintegrated(const Vector3& a_body,
                                      const Vector3& w_body, const double dt,
                                      const Vector9& preintegrated,
-                                     OptionalJacobian<9, 9> A = boost::none,
-                                     OptionalJacobian<9, 3> B = boost::none,
-                                     OptionalJacobian<9, 3> C = boost::none);
+                                     OptionalJacobian<9, 9> A = {},
+                                     OptionalJacobian<9, 3> B = {},
+                                     OptionalJacobian<9, 3> C = {});
 
   /// Update preintegrated measurements and get derivatives
   /// It takes measured quantities in the j frame
@@ -106,13 +109,13 @@ public:
   /// summarizing the preintegrated IMU measurements so far
   /// NOTE(frank): implementation is different in two versions
   Vector9 biasCorrectedDelta(const imuBias::ConstantBias& bias_i,
-      OptionalJacobian<9, 6> H = boost::none) const override;
+      OptionalJacobian<9, 6> H = {}) const override;
 
   // Compose the two pre-integrated 9D-vectors zeta01 and zeta02, with derivatives
   static Vector9 Compose(const Vector9& zeta01, const Vector9& zeta12,
                          double deltaT12,
-                         OptionalJacobian<9, 9> H1 = boost::none,
-                         OptionalJacobian<9, 9> H2 = boost::none);
+                         OptionalJacobian<9, 9> H1 = {},
+                         OptionalJacobian<9, 9> H2 = {});
 
   /// Merge in a different set of measurements and update bias derivatives accordingly
   /// The derivatives apply to the preintegrated Vector9
@@ -120,13 +123,14 @@ public:
   /// @}
 
   /** Dummy clone for MATLAB */
-  virtual boost::shared_ptr<TangentPreintegration> clone() const {
-    return boost::shared_ptr<TangentPreintegration>();
+  virtual std::shared_ptr<TangentPreintegration> clone() const {
+    return std::shared_ptr<TangentPreintegration>();
   }
 
   /// @}
 
 private:
+#if GTSAM_ENABLE_BOOST_SERIALIZATION
   /** Serialization function */
   friend class boost::serialization::access;
   template<class ARCHIVE>
@@ -137,9 +141,7 @@ private:
     ar & BOOST_SERIALIZATION_NVP(preintegrated_H_biasAcc_);
     ar & BOOST_SERIALIZATION_NVP(preintegrated_H_biasOmega_);
   }
-
-public:
-  GTSAM_MAKE_ALIGNED_OPERATOR_NEW
+#endif
 };
 
 } /// namespace gtsam

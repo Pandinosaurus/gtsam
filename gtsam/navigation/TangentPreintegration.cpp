@@ -15,16 +15,18 @@
  *  @author Adam Bry
  **/
 
-#include "TangentPreintegration.h"
-#include <gtsam/base/numericalDerivative.h>
-#include <boost/make_shared.hpp>
+#include <gtsam/base/MatrixConstants.h>
+#include <gtsam/base/VectorConstants.h>
+#include <gtsam/navigation/TangentPreintegration.h>
+
+#include <stdexcept>
 
 using namespace std;
 
 namespace gtsam {
 
 //------------------------------------------------------------------------------
-TangentPreintegration::TangentPreintegration(const boost::shared_ptr<Params>& p,
+TangentPreintegration::TangentPreintegration(const std::shared_ptr<Params>& p,
     const Bias& biasHat) :
     PreintegrationBase(p, biasHat) {
   resetIntegration();
@@ -51,6 +53,15 @@ bool TangentPreintegration::equals(const TangentPreintegration& other,
 }
 
 //------------------------------------------------------------------------------
+Vector3 TangentPreintegration::so3TangentAt(double t) const {
+  if (t < 0.0 || t > deltaTij_) {
+    throw std::out_of_range("t must be in [0, deltaTij]");
+  }
+  if (deltaTij_ == 0.0) return Z_3x1;
+  return (t / deltaTij_) * theta();
+}
+
+//------------------------------------------------------------------------------
 // See extensive discussion in ImuFactor.lyx
 Vector9 TangentPreintegration::UpdatePreintegrated(const Vector3& a_body,
     const Vector3& w_body, double dt, const Vector9& preintegrated,
@@ -67,9 +78,9 @@ Vector9 TangentPreintegration::UpdatePreintegrated(const Vector3& a_body,
   // Calculate exact mean propagation
   Matrix3 w_tangent_H_theta, invH;
   const Vector3 w_tangent = // angular velocity mapped back to tangent space
-      local.applyInvDexp(w_body, A ? &w_tangent_H_theta : 0, C ? &invH : 0);
-  const Rot3 R(local.expmap());  // nRb: rotation of body in nav frame
-  const Vector3 a_nav = R * a_body;
+      local.InvJacobian().applyRight(w_body, A ? &w_tangent_H_theta : 0, C ? &invH : 0);
+  const Matrix3 nRb = local.expmap();  // nRb: rotation of body in nav frame
+  const Vector3 a_nav = nRb * a_body;
   const double dt22 = 0.5 * dt * dt;
 
   Vector9 preintegratedPlus;
@@ -79,8 +90,8 @@ Vector9 TangentPreintegration::UpdatePreintegrated(const Vector3& a_body,
       velocity + a_nav * dt;                    // velocity
 
   if (A) {
-    // Exact derivative of R*a with respect to theta:
-    const Matrix3 a_nav_H_theta = R.matrix() * skewSymmetric(-a_body) * local.dexp();
+    // Exact derivative of nRb*a with respect to theta:
+    const Matrix3 a_nav_H_theta = nRb * skewSymmetric(-a_body) * local.rightJacobian();
 
     A->setIdentity();
     A->block<3, 3>(0, 0).noalias() += w_tangent_H_theta * dt;  // theta
@@ -90,8 +101,8 @@ Vector9 TangentPreintegration::UpdatePreintegrated(const Vector3& a_body,
   }
   if (B) {
     B->block<3, 3>(0, 0) = Z_3x3;
-    B->block<3, 3>(3, 0) = R.matrix() * dt22;
-    B->block<3, 3>(6, 0) = R.matrix() * dt;
+    B->block<3, 3>(3, 0) = nRb * dt22;
+    B->block<3, 3>(6, 0) = nRb * dt;
   }
   if (C) {
     C->block<3, 3>(0, 0) = invH * dt;
@@ -112,9 +123,11 @@ void TangentPreintegration::update(const Vector3& measuredAcc,
 
   // Possibly correct for sensor pose by converting to body frame
   Matrix3 D_correctedAcc_acc, D_correctedAcc_omega, D_correctedOmega_omega;
-  if (p().body_P_sensor)
-    boost::tie(acc, omega) = correctMeasurementsBySensorPose(acc, omega,
-        D_correctedAcc_acc, D_correctedAcc_omega, D_correctedOmega_omega);
+  if (p().body_P_sensor) {
+    std::tie(acc, omega) = correctMeasurementsBySensorPose(
+        acc, omega, D_correctedAcc_acc, D_correctedAcc_omega,
+        D_correctedOmega_omega);
+  }
 
   // Do update
   deltaTij_ += dt;
@@ -128,15 +141,31 @@ void TangentPreintegration::update(const Vector3& measuredAcc,
     *B *= D_correctedAcc_acc; // NOTE(frank): needs to be last
   }
 
-  // new_H_biasAcc = new_H_old * old_H_biasAcc + new_H_acc * acc_H_biasAcc
-  // where acc_H_biasAcc = -I_3x3, hence
-  // new_H_biasAcc = new_H_old * old_H_biasAcc - new_H_acc
-  preintegrated_H_biasAcc_ = (*A) * preintegrated_H_biasAcc_ - (*B);
+  // Propagate the two accumulated bias Jacobians using the exact Tangent
+  // transition structure instead of two dense 9x9-by-9x3 products:
+  //
+  //                       [ A00   0    0  ]
+  //                   A = [ A10   I   dtI ] .
+  //                       [ A20   0    I  ]
+  //
+  // Acceleration bias never affects rotation. Its top block therefore remains
+  // zero, while position and velocity need only additions and scaling by dt.
+  const Matrix3 oldAccelerationVelocity =
+      preintegrated_H_biasAcc_.bottomRows<3>();
+  preintegrated_H_biasAcc_.middleRows<3>(3) +=
+      oldAccelerationVelocity * dt - B->middleRows<3>(3);
+  preintegrated_H_biasAcc_.bottomRows<3>() -= B->bottomRows<3>();
 
-  // new_H_biasOmega = new_H_old * old_H_biasOmega + new_H_omega * omega_H_biasOmega
-  // where omega_H_biasOmega = -I_3x3, hence
-  // new_H_biasOmega = new_H_old * old_H_biasOmega - new_H_omega
-  preintegrated_H_biasOmega_ = (*A) * preintegrated_H_biasOmega_ - (*C);
+  // Gyroscope bias affects all three blocks. Save the old rotation block since
+  // the position and velocity updates both use it after rotation is replaced.
+  const Matrix3 oldOmegaRotation = preintegrated_H_biasOmega_.topRows<3>();
+  preintegrated_H_biasOmega_.topRows<3>().noalias() =
+      A->block<3, 3>(0, 0) * oldOmegaRotation - C->topRows<3>();
+  preintegrated_H_biasOmega_.middleRows<3>(3).noalias() +=
+      A->block<3, 3>(3, 0) * oldOmegaRotation +
+      dt * preintegrated_H_biasOmega_.bottomRows<3>() - C->middleRows<3>(3);
+  preintegrated_H_biasOmega_.bottomRows<3>().noalias() +=
+      A->block<3, 3>(6, 0) * oldOmegaRotation - C->bottomRows<3>();
 }
 
 //------------------------------------------------------------------------------

@@ -13,7 +13,7 @@ import unittest
 import numpy as np
 
 import gtsam
-from gtsam import Rot3
+from gtsam import Point3, Rot3, Unit3
 from gtsam.utils.test_case import GtsamTestCase
 
 
@@ -2018,7 +2018,10 @@ class TestRot3(GtsamTestCase):
         # get back angle in radians
         _, actual_angle = Rot3(R).axisAngle()
         expected_angle = 3.1396582
-        np.testing.assert_almost_equal(actual_angle, expected_angle, 1e-7)
+        # NOTE: the third positional argument of assert_almost_equal is
+        # `decimal`, so passing 1e-7 here amounted to a ~1.5 radian tolerance.
+        # decimal=7 is the intended check and is met by the current Logmap.
+        np.testing.assert_almost_equal(actual_angle, expected_angle, decimal=7)
 
     def test_axis_angle_stress_test(self) -> None:
         """Test that .axisAngle() yields angles less than 180 degrees for specific inputs."""
@@ -2032,6 +2035,62 @@ class TestRot3(GtsamTestCase):
             angle_deg = np.rad2deg(angle)
             assert angle_deg < 180
 
+    def test_rotate(self) -> None:
+        """Test that rotate() works for both Point3 and Unit3."""
+        R = Rot3(np.array([[1, 0, 0], [0, -1, 0], [0, 0, -1]]))
+        p = Point3(1., 1., 1.)
+        u = Unit3(np.array([1, 1, 1]))
+        actual_p = R.rotate(p)
+        actual_u = R.rotate(u)
+        expected_p = Point3(np.array([1, -1, -1]))
+        expected_u = Unit3(np.array([1, -1, -1]))
+        np.testing.assert_array_equal(actual_p, expected_p)
+        np.testing.assert_array_equal(actual_u.point3(), expected_u.point3())
+
+    def test_unrotate(self) -> None:
+        """Test that unrotate() after rotate() yields original Point3/Unit3."""
+        wRc = Rot3(np.array(R1_R2_pairs[0][0]))
+        c_p = Point3(1., 1., 1.)
+        c_u = Unit3(np.array([1, 1, 1]))
+        w_p = wRc.rotate(c_p)
+        w_u = wRc.rotate(c_u)
+        actual_p = wRc.unrotate(w_p)
+        actual_u = wRc.unrotate(w_u)
+
+        np.testing.assert_almost_equal(actual_p, c_p, decimal=6)
+        np.testing.assert_almost_equal(actual_u.point3(), c_u.point3(), decimal=6)
+
+    def test_is_valid(self) -> None:
+        """Rot3.IsValid accepts rotations and rejects degenerate matrices."""
+        self.assertTrue(Rot3.IsValid(np.eye(3), 1e-9))
+        self.assertTrue(Rot3.IsValid(Rot3.Rz(0.5).matrix(), 1e-9))
+        self.assertFalse(Rot3.IsValid(np.zeros((3, 3)), 1e-9))
+        self.assertFalse(Rot3.IsValid(np.diag([2.0, 1.0, 1.0]), 1e-9))
+        # Reflection (det = -1)
+        self.assertFalse(Rot3.IsValid(np.diag([1.0, 1.0, -1.0]), 1e-9))
+        # Real-data rotation rounded to 9 significant digits (orthogonality
+        # error ~6e-7, from test_Sim3's Skydio sequence): rejected strictly,
+        # accepted at a loose tolerance.
+        R = np.array([[0.692272397, -0.00529704529, -0.721616549],
+                      [0.00634689669, 0.999979075, -0.00125157022],
+                      [0.721608079, -0.0037136016, 0.692291531]])
+        self.assertFalse(Rot3.IsValid(R, 1e-9))
+        self.assertTrue(Rot3.IsValid(R, 1e-3))
+
+    def test_type_identity(self) -> None:
+        """gtsam.Rot3 must be the extension type itself, not a subclass.
+
+        Every inherited factory and every C++ method returning a rotation
+        hands back gtsam.gtsam.Rot3, so a Python subclass would silently
+        break isinstance checks and split the type in the generated stubs,
+        making type checkers reject `r: Rot3 = Rot3.Ypr(...)`.
+        """
+        self.assertIs(gtsam.Rot3, gtsam.gtsam.Rot3)
+        self.assertIsInstance(Rot3.Ypr(0.1, 0.2, 0.3), gtsam.Rot3)
+        self.assertIsInstance(Rot3.Rz(0.5), gtsam.Rot3)
+        self.assertIsInstance(Rot3().inverse(), gtsam.Rot3)
+        self.assertIsInstance(
+            gtsam.Pose3(Rot3(), np.zeros(3)).rotation(), gtsam.Rot3)
 
 if __name__ == "__main__":
     unittest.main()
